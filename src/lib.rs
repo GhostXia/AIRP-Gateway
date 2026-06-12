@@ -1,0 +1,38 @@
+//! # AIRP-Gateway
+//!
+//! Generic, high-performance protocol bridge that links a **frontend**
+//! (HTTP / SSE) to one or more **MCP servers** (such as `AIRP-MCP-Server`),
+//! which in turn reach `Agent` / inference backends.
+//!
+//! ```text
+//! frontend  ->  AIRP-Gateway  ->  AIRP-MCP-Server  ->  Agent / backend
+//! ```
+//!
+//! ## Design goals
+//! - **Pure protocol bridge.** No roleplay / domain logic lives here. The
+//!   gateway authenticates, rate-limits, and forwards. Domain behaviour is
+//!   owned by the MCP server it talks to.
+//! - **Generic & embeddable.** Library-first. Drop this crate into AIRP-Core
+//!   or any other project; the binary is a thin runner.
+//! - **Transport-agnostic upstream.** Talk to MCP servers over **stdio** or
+//!   **HTTP** (streamable) behind a single [`mcp::transport::McpTransport`]
+//!   trait, so new transports plug in without touching the bridge.
+//! - **Portable architecture.** Layers are kept thin and dependency-light so
+//!   the design ports cleanly to a future language if one is ever preferred.
+//!
+//! ## Layering
+//! - [`config`]   declarative, layered configuration (default -> file -> env)
+//! - [`server`]   frontend-facing axum HTTP/SSE surface + middleware
+//! - [`bridge`]   request -> MCP operation -> response translation
+//! - [`mcp`]      MCP client, session, and pluggable transports
+
+pub mod bridge;
+pub mod config;
+pub mod error;
+pub mod mcp;
+pub mod server;
+pub mod telemetry;
+
+pub use config::GatewayConfig;
+pub use error::{GatewayError, Result};
+pub use server::{Gateway, GatewayState};

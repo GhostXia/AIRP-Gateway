@@ -1,0 +1,4 @@
+# Match AIRP-Core: build with the GNU toolchain on Windows (self-contained
+# MinGW linker), avoiding the MSVC `link.exe` dependency.
+[build]
+target = "x86_64-pc-windows-gnu"
