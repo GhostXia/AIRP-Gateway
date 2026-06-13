@@ -13,11 +13,7 @@ use crate::error::GatewayError;
 use crate::server::GatewayState;
 
 /// Bearer-token gate. No-op when `access_key` is unset.
-pub async fn auth(
-    State(state): State<Arc<GatewayState>>,
-    req: Request,
-    next: Next,
-) -> Response {
+pub async fn auth(State(state): State<Arc<GatewayState>>, req: Request, next: Next) -> Response {
     let Some(expected) = state.config.access_key.as_deref() else {
         return next.run(req).await;
     };

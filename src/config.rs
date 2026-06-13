@@ -51,7 +51,11 @@ pub struct RateLimitConfig {
 
 impl Default for RateLimitConfig {
     fn default() -> Self {
-        Self { enabled: true, per_second: 10, burst: 20 }
+        Self {
+            enabled: true,
+            per_second: 10,
+            burst: 20,
+        }
     }
 }
 
@@ -66,7 +70,10 @@ pub struct CorsConfig {
 
 impl Default for CorsConfig {
     fn default() -> Self {
-        Self { allow_any: true, allow_origins: Vec::new() }
+        Self {
+            allow_any: true,
+            allow_origins: Vec::new(),
+        }
     }
 }
 

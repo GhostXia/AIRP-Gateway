@@ -23,7 +23,11 @@ impl HttpTransport {
         let client = reqwest::Client::builder()
             .build()
             .map_err(|e| GatewayError::Transport(e.to_string()))?;
-        Ok(Self { client, url: url.to_string(), auth_token })
+        Ok(Self {
+            client,
+            url: url.to_string(),
+            auth_token,
+        })
     }
 
     fn apply_auth(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {

@@ -48,7 +48,10 @@ impl McpClient {
                 let req = JsonRpcRequest::new(self.next_id(), "initialize", Some(params));
                 let resp = self.transport.request(req).await?;
                 if let Some(err) = resp.error {
-                    return Err(GatewayError::Upstream { code: err.code, message: err.message });
+                    return Err(GatewayError::Upstream {
+                        code: err.code,
+                        message: err.message,
+                    });
                 }
                 // Per spec, follow up with the `initialized` notification.
                 let note = JsonRpcNotification::new("notifications/initialized", None);
@@ -77,7 +80,10 @@ impl McpClient {
         let req = JsonRpcRequest::new(self.next_id(), method, Some(params));
         let resp = self.transport.request(req).await?;
         if let Some(err) = resp.error {
-            return Err(GatewayError::Upstream { code: err.code, message: err.message });
+            return Err(GatewayError::Upstream {
+                code: err.code,
+                message: err.message,
+            });
         }
         Ok(resp.result.unwrap_or(Value::Null))
     }

@@ -38,9 +38,7 @@ pub async fn dispatch(
 
     let rule = match state.bridge.match_route(method.as_str(), path) {
         Some(r) => r.clone(),
-        None => {
-            return GatewayError::NoRoute(method.to_string(), path.to_string()).into_response()
-        }
+        None => return GatewayError::NoRoute(method.to_string(), path.to_string()).into_response(),
     };
 
     // Empty body is a valid empty arguments object.

@@ -25,6 +25,12 @@ impl UpstreamPool {
         Ok(Self { clients })
     }
 
+    /// Register a client directly. Useful for composing pools by hand (e.g.
+    /// tests with a mock transport, or hosts wiring clients programmatically).
+    pub fn insert(&mut self, name: impl Into<String>, client: Arc<McpClient>) {
+        self.clients.insert(name.into(), client);
+    }
+
     pub fn get(&self, name: &str) -> Option<Arc<McpClient>> {
         self.clients.get(name).cloned()
     }

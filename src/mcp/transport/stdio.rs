@@ -71,7 +71,11 @@ impl StdioTransport {
             }
         });
 
-        Ok(Self { stdin: Mutex::new(stdin), pending, _child: child })
+        Ok(Self {
+            stdin: Mutex::new(stdin),
+            pending,
+            _child: child,
+        })
     }
 
     async fn write_line(&self, payload: &str) -> Result<()> {

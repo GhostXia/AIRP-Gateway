@@ -31,7 +31,11 @@ impl GatewayState {
     pub async fn build(config: GatewayConfig) -> Result<Arc<Self>> {
         let pool = Arc::new(UpstreamPool::from_config(&config.upstreams).await?);
         let bridge = Bridge::new(pool.clone(), config.routes.clone());
-        Ok(Arc::new(GatewayState { config, bridge, pool }))
+        Ok(Arc::new(GatewayState {
+            config,
+            bridge,
+            pool,
+        }))
     }
 
     pub fn bridge_upstreams(&self) -> Vec<String> {
@@ -51,7 +55,9 @@ pub struct Gateway {
 impl Gateway {
     /// Build the gateway with the default HTTP frontend.
     pub async fn build(config: GatewayConfig) -> Result<Self> {
-        Ok(Self { state: GatewayState::build(config).await? })
+        Ok(Self {
+            state: GatewayState::build(config).await?,
+        })
     }
 
     /// Wrap pre-built shared state (e.g. constructed via [`GatewayState::build`]
@@ -71,12 +77,13 @@ impl Gateway {
         let state = self.state.clone();
 
         // Authenticated API surface (everything except the public routes below).
-        let api = Router::new()
-            .fallback(handlers::dispatch)
-            .layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                middleware::auth,
-            ));
+        let api =
+            Router::new()
+                .fallback(handlers::dispatch)
+                .layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    middleware::auth,
+                ));
 
         // Public, unauthenticated routes.
         let public = Router::new()
