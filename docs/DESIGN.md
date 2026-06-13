@@ -226,6 +226,10 @@ src/
   - **走 stdio：只需更新本项目，MCP-Server 零改动即可对接。** → Stage 1 锁定 stdio。
   - **走 http：必须先改 MCP-Server**（接通 `handle_mcp_post` 到 rmcp，或加 streamable-http feature + 挂载 router）。Stage 3 的 http 传输对一个**尚不存在的合规上游**编程是无意义的 → Stage 3 前置依赖 = MCP-Server http 完成。
 
+**R7 · AIRP-State-Protocol（前端侧契约，可选联动）**
+- 发现：[AIRP-State-Protocol](https://github.com/GhostXia/AIRP-State-Protocol) 是 Tauri+Vue UI + 协议规范。定义 `Envelope` / `Blueprint`（声明式 UI）/ `State+Patch`(RFC 6902) / Widget 注册表 / 进程级 `AgentBus` trait；**显式将 AIRP-Gateway 列为 AgentBus 实现方**。传输无关（IPC/HTTP/SSE/WS）。
+- 影响：它是 `前端↔Gateway` 契约，与上游 MCP（`Gateway↔后端`）正交。**联动须为可选适配层**（实现 `AgentBus`，把 State-Protocol 消息映射到既有 `RouteRule→MCP`，结果按 Blueprint/Patch 回传），**不得进核心 bridge**——否则违反「通用、不捆绑」理念（见 §1/§2）。未实现，列为未来可选阶段。
+
 **R5 · 工具链 / 构建环境**
 - 发现：
   - 本机无 MSVC `link.exe`；装有 `stable-x86_64-pc-windows-gnu`（自带 MinGW）。→ `.cargo/config.toml` 锁 gnu。
@@ -288,3 +292,4 @@ src/
 
 - **2026-06-12** 建档。Stage 0 脚手架完成（纯库、`cargo check` 通过）。确立 ADR-001~006。完成 R1~R5 调研。下一步 = Stage 1 端到端联调。
 - **2026-06-12** R6：实测 AIRP-MCP-Server 暴露面——stdio 为真 MCP（零改对接），http `/mcp/v1` 为空壳（接 http 须先改 MCP-Server）。Stage 1 锁定 stdio，Stage 3 标记阻塞。
+- **2026-06-12** R7：调研 AIRP-State-Protocol（前端契约，AgentBus）。确立联动仅作可选适配层、不进核心。README 置顶「通用、不捆绑」理念 + 新增「生态联动（可选）」节。

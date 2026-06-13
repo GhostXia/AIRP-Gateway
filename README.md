@@ -2,10 +2,15 @@
 
 **AIRP-Gateway** = AI Roleplay Gateway。通用、高性能的**纯协议桥**：把前端的 HTTP/SSE 请求，鉴权 + 限流后翻译成 MCP（JSON-RPC）调用，转发给上游 MCP 服务。
 
-> 隶属 **AIRP-Core** 生态，但作为独立通用模块存在。可直接并入 AIRP-Core 或任意其他项目。
-> 上游数据底座见 [AIRP-Core](https://github.com/GhostXia/AIRP-Core) / [AIRP-MCP-Server](https://github.com/GhostXia/AIRP-MCP-Server)。
+> ## 🧭 核心理念：通用，不捆绑
+>
+> **本项目一贯以「通用」为理念核心，不捆绑任何项目使用。任何第三方项目均可便捷地用本项目做任何事情。**
+>
+> AIRP-Gateway 诞生于 AIRP 生态，但**不属于、不依赖、不绑定**其中任何单一项目。它是一个独立的通用协议桥：上游是什么 MCP 服务、下游是什么前端，全部由配置决定。与 AIRP-Core / AIRP-MCP-Server / AIRP-State-Protocol 的「联动」一律是**可选适配**，而非前提。
 
 [![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue)](#许可)
+
+> 相关生态（均为可选）：[AIRP-Core](https://github.com/GhostXia/AIRP-Core) · [AIRP-MCP-Server](https://github.com/GhostXia/AIRP-MCP-Server)（上游数据底座）· [AIRP-State-Protocol](https://github.com/GhostXia/AIRP-State-Protocol)（前端契约，见下方「生态联动」）。
 
 ```text
 前端 (UI)  ──►  AIRP-Gateway  ──►  AIRP-MCP-Server  ──►  Agent / 推理后端
@@ -138,6 +143,29 @@ target = { kind = "tool", name = "list_characters" }
 |------|------|
 | **stdio** | ✅ 可用。Gateway 拉起 `airp-mcp mcp --data-dir` 子进程，行分隔 JSON-RPC，对接 AIRP-MCP-Server 真实 MCP，零改动 |
 | **HTTP** | ⛔ 阻塞。AIRP-MCP-Server 的 `/mcp/v1` 当前为未完成的桩（POST 不转发、无 session）。需 MCP-Server 侧补完——见 [`docs/MCP-SERVER-REQUIREMENTS.md`](docs/MCP-SERVER-REQUIREMENTS.md) |
+
+---
+
+## 生态联动（可选）
+
+> 重申：以下全部是**可选适配**。不接入任何一个，Gateway 也能独立服务任意前端与任意 MCP 服务。
+
+### AIRP-State-Protocol —— 前端契约
+[AIRP-State-Protocol](https://github.com/GhostXia/AIRP-State-Protocol) 定义了「Agent 产出声明式数据、UI 只负责渲染」的前端↔网关契约：`Envelope` / `Blueprint` / `State + Patch`(RFC 6902) / 可扩展 Widget 注册表，以及进程级的 **`AgentBus` trait**——并显式把 **AIRP-Gateway 列为该 trait 的实现方之一**。它本身**传输无关**（Tauri IPC / HTTP / SSE / WebSocket 皆可）。
+
+完整链路设想：
+
+```text
+AIRP-State-Protocol UI  ──AgentBus(SSE/WS/HTTP)──►  AIRP-Gateway  ──MCP──►  AIRP-MCP-Server  ──►  Agent
+        (前端·声明式渲染)                              (本项目·桥)             (数据底座)
+```
+
+联动方式（计划中，未实现）：Gateway 提供一个**可选**的 `AgentBus` 适配层，把前端的 State-Protocol 消息映射到本项目既有的 `RouteRule → MCP` 分发，再把结果按 `Blueprint`/`Patch` 形态回传。核心桥保持纯净——适配层是插件，不进 `bridge`。
+
+> 它是「前端那一侧」的契约，与上游 MCP 互不冲突：State-Protocol 管 `前端↔Gateway`，MCP 管 `Gateway↔后端`。
+
+### 接入任意第三方
+不必是 AIRP 项目。任何能发 HTTP/SSE 的前端 + 任何讲 MCP 的服务，配一份 `config.toml` 即可对接。新前端契约 = 加可选适配层；新上游传输 = `impl McpTransport`。
 
 ---
 
