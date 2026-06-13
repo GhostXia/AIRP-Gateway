@@ -33,6 +33,14 @@ pub mod mcp;
 pub mod server;
 pub mod telemetry;
 
-pub use config::GatewayConfig;
+pub use config::{
+    GatewayConfig, RouteRule, RouteTarget, TransportConfig, UpstreamConfig,
+};
 pub use error::{GatewayError, Result};
 pub use server::{Gateway, GatewayState};
+
+// Frontend-agnostic core, re-exported so third parties can build their own
+// frontend (any protocol) on top of the shared bridge + MCP client layer.
+pub use bridge::{Bridge, DispatchOutcome};
+pub use mcp::transport::{McpTransport, connect as connect_transport};
+pub use mcp::{McpClient, UpstreamPool};

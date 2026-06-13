@@ -22,23 +22,48 @@ pub struct GatewayState {
 }
 
 impl GatewayState {
+    /// Connect upstream transports, assemble the bridge, and return shared state.
+    ///
+    /// This is the reusable core. A third party that wants a **different frontend**
+    /// (gRPC, WebSocket, AIRP-State-Protocol's AgentBus, a custom protocol — not the
+    /// built-in axum HTTP surface) can build state here and dispatch via
+    /// [`GatewayState::bridge`] without using the [`Gateway`] server at all.
+    pub async fn build(config: GatewayConfig) -> Result<Arc<Self>> {
+        let pool = Arc::new(UpstreamPool::from_config(&config.upstreams).await?);
+        let bridge = Bridge::new(pool.clone(), config.routes.clone());
+        Ok(Arc::new(GatewayState { config, bridge, pool }))
+    }
+
     pub fn bridge_upstreams(&self) -> Vec<String> {
         self.pool.names().cloned().collect()
     }
 }
 
-/// A fully-built gateway, ready to serve.
+/// The built-in HTTP/SSE frontend over a [`GatewayState`].
+///
+/// This is *one* frontend. The core ([`GatewayState`] + [`Bridge`] + the MCP
+/// client layer) is frontend-agnostic — see [`GatewayState::build`] to drive it
+/// from any other protocol.
 pub struct Gateway {
     state: Arc<GatewayState>,
 }
 
 impl Gateway {
-    /// Build the gateway: connect upstream transports and assemble the bridge.
+    /// Build the gateway with the default HTTP frontend.
     pub async fn build(config: GatewayConfig) -> Result<Self> {
-        let pool = Arc::new(UpstreamPool::from_config(&config.upstreams).await?);
-        let bridge = Bridge::new(pool.clone(), config.routes.clone());
-        let state = Arc::new(GatewayState { config, bridge, pool });
-        Ok(Self { state })
+        Ok(Self { state: GatewayState::build(config).await? })
+    }
+
+    /// Wrap pre-built shared state (e.g. constructed via [`GatewayState::build`]
+    /// and shared with a custom frontend) in the default HTTP frontend.
+    pub fn from_state(state: Arc<GatewayState>) -> Self {
+        Self { state }
+    }
+
+    /// Access the shared state: config, [`Bridge`], and upstream pool. Lets a
+    /// host mount its own routes/handlers that dispatch through the same bridge.
+    pub fn state(&self) -> Arc<GatewayState> {
+        self.state.clone()
     }
 
     /// Construct the axum router with middleware applied.
