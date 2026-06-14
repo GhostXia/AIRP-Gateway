@@ -18,8 +18,9 @@ pub struct McpClient {
     pub name: String,
     transport: Arc<dyn McpTransport>,
     next_id: AtomicU64,
-    /// `initialize` is run once, lazily, on first use.
-    initialized: OnceCell<()>,
+    /// `initialize` is run once, lazily, on first use. Holds the *negotiated*
+    /// protocol version the server replied with.
+    negotiated: OnceCell<String>,
 }
 
 impl McpClient {
@@ -28,7 +29,7 @@ impl McpClient {
             name: name.into(),
             transport,
             next_id: AtomicU64::new(1),
-            initialized: OnceCell::new(),
+            negotiated: OnceCell::new(),
         }
     }
 
@@ -38,7 +39,7 @@ impl McpClient {
 
     /// Run the MCP `initialize` handshake exactly once.
     pub async fn ensure_initialized(&self) -> Result<()> {
-        self.initialized
+        self.negotiated
             .get_or_try_init(|| async {
                 let params = json!({
                     "protocolVersion": MCP_PROTOCOL_VERSION,
@@ -53,13 +54,31 @@ impl McpClient {
                         message: err.message,
                     });
                 }
+                // Capture the *negotiated* protocol version. The server MAY answer
+                // with a different version than we advertised (spec allows this);
+                // the HTTP transport must echo it in the `MCP-Protocol-Version`
+                // header on subsequent requests.
+                let version = resp
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.get("protocolVersion"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(MCP_PROTOCOL_VERSION)
+                    .to_string();
                 // Per spec, follow up with the `initialized` notification.
                 let note = JsonRpcNotification::new("notifications/initialized", None);
                 self.transport.notify(note).await?;
-                Ok(())
+                Ok(version)
             })
             .await
             .map(|_| ())
+    }
+
+    /// The protocol version negotiated with the upstream during `initialize`,
+    /// or `None` if it has not run yet. Use this (not the advertised constant)
+    /// for the HTTP `MCP-Protocol-Version` header.
+    pub fn protocol_version(&self) -> Option<String> {
+        self.negotiated.get().cloned()
     }
 
     /// Call an MCP tool, returning its `result` payload.

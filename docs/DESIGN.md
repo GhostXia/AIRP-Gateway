@@ -177,11 +177,11 @@ src/
 - 退出标准：[ ] transport 增 `request_stream` [ ] handler 返回 `axum::response::Sse` [ ] 背压/断连处理
 - 指引：先定上游增量形态（MCP progress notification？SSE 帧？）再写映射。
 
-### Stage 3 · HTTP 传输补全 ⬜（**阻塞中**）
+### Stage 3 · HTTP 传输补全 ⬜（**已解锁**，R8）
 - 目标：合规 streamable HTTP 客户端。
-- **前置依赖（R6）**：AIRP-MCP-Server 的 http `/mcp/v1` 当前是空壳（POST 不转发、无 session）。**必须先在 MCP-Server 侧补完** http 传输（接通 rmcp 或加 `transport-streamable-http-server` feature），否则本阶段无对接对象。
-- 退出标准：[ ] initialize 取 `Mcp-Session-Id` 并回传 [ ] 所有后续请求带 `MCP-Protocol-Version` 头 [ ] 解析 `text/event-stream` 响应体
-- 指引：见 R4。先确认上游 http 就绪再开工。
+- 前置依赖已满足：AIRP-MCP-Server 的 `/mcp/v1` 已真实挂载 rmcp streamable-http（真派发、`Mcp-Session-Id`、`MCP-Protocol-Version`、`AIRP_HTTP_TOKEN` bearer、CORS；其侧 CI 断言 session 头 + tools/list=38）。
+- 退出标准：[ ] initialize 取 `Mcp-Session-Id` 并在后续请求回传 [ ] 后续请求带 `MCP-Protocol-Version` 头（值用**协商版本** `McpClient::protocol_version()`，已捕获）[ ] 解析 `text/event-stream` 响应体
+- 指引：见 R4/R8。版本协商已落地（client 捕获服务端返回版本）。
 
 ### Stage 4 · 路由/兼容增强 ⬜
 - 目标：覆盖 OpenAI 兼容端点等复杂映射（见 §7 开放问题）。
@@ -235,6 +235,18 @@ src/
 - 发现：[AIRP-State-Protocol](https://github.com/GhostXia/AIRP-State-Protocol) 是 Tauri+Vue UI + 协议规范。定义 `Envelope` / `Blueprint`（声明式 UI）/ `State+Patch`(RFC 6902) / Widget 注册表 / 进程级 `AgentBus` trait；**显式将 AIRP-Gateway 列为 AgentBus 实现方**。传输无关（IPC/HTTP/SSE/WS）。
 - 影响：它是 `前端↔Gateway` 契约，与上游 MCP（`Gateway↔后端`）正交。**联动须为可选适配层**（实现 `AgentBus`，把 State-Protocol 消息映射到既有 `RouteRule→MCP`，结果按 Blueprint/Patch 回传），**不得进核心 bridge**——否则违反「通用、不捆绑」理念（见 §1/§2）。未实现，列为未来可选阶段。
 
+**R8 · AIRP-MCP-Server 第二批回执（stdio 确认 + HTTP 完成 + 版本）**
+- 发现（MCP-Server 反馈，其 CI 已钉死 e2e）：
+  - stdio 契约 A1–A6 全部满足。冒烟工具 `list_characters`（无参 `{}`），空目录返回 `{"content":[{"type":"text","text":"No characters imported yet."}],"isError":false}`。stdin 关 10s 内自退。NDJSON、日志走 stderr 均经 e2e 验证。
+  - **HTTP 已完成**（不再是空壳）：`/mcp/v1` 真挂 rmcp streamable-http，session 头 + tools/list=38 已断言。R1–R8 就绪。→ Stage 3 解锁。
+  - **协议版本不一致**：服务端 `protocolVersion = 2025-03-26`（非我方 advertised 的 2025-06-18），`serverInfo.name = airp-mcp-server`。
+  - Linux 二进制：CI artifact `airp-mcp-linux-x86_64`（默认留存 90 天，按 run 取；可改 GitHub Release 拿稳定 URL）。
+- 影响：
+  - stdio 当前路径**无影响**——client 不校验返回版本，服务端降级应答正常工作。
+  - 已落地**版本协商捕获**：`McpClient` 存服务端返回的 `protocolVersion`，新增 `protocol_version()`。HTTP（Stage 3）的 `MCP-Protocol-Version` 头须用此协商值，而非 advertised 常量。
+  - 我方继续 advertise 最新版本（2025-06-18，符合 spec「发最新」），由服务端降级、我方捕获——无需改常量。
+  - Gateway CI 可加 job：下载 `airp-mcp-linux-x86_64` → 真实子进程 → initialize + `list_characters` 断言（真实跨进程 e2e，Stage 1 收尾）。
+
 **R5 · 工具链 / 构建环境**
 - 发现：
   - 本机无 MSVC `link.exe`；装有 `stable-x86_64-pc-windows-gnu`（自带 MinGW）。→ `.cargo/config.toml` 锁 gnu。
@@ -265,8 +277,8 @@ src/
 ## 8. 已知风险 / 遗留
 
 - ⛔ `D:\` 构建脚本执行被系统策略拒（os error 5）→ 必须重定向 target 目录；Core 集成同样受影响。
-- ⛔ **AIRP-MCP-Server 的 http 模式是空壳**（R6）：`/mcp/v1` POST 不转发给 rmcp、无 session。Gateway 走 http 接入前，必须先改 MCP-Server。stdio 不受影响。
-- ⚠️ 本侧 http 传输缺 session-id / 协议头 / SSE → 真实 http 上游暂不可靠（Stage 3）。
+- ✅ ~~AIRP-MCP-Server 的 http 模式是空壳~~（R6）→ 已由上游修复完成（R8）。
+- ⚠️ 本侧 http 传输缺 session-id / 协议头 / SSE 解析 → 待实现（Stage 3，已解锁）。`MCP-Protocol-Version` 须用协商版本（上游为 2025-03-26）。
 - ⚠️ 无请求超时、无上游重连、无健康检查（Stage 6）。
 - ⚠️ initialize 未做版本协商校验。
 - ⚠️ stdio 未实现规范的关机序列（关 stdin → 等退出 → SIGTERM/KILL）。
@@ -300,3 +312,5 @@ src/
 - **2026-06-12** R6：实测 AIRP-MCP-Server 暴露面——stdio 为真 MCP（零改对接），http `/mcp/v1` 为空壳（接 http 须先改 MCP-Server）。Stage 1 锁定 stdio，Stage 3 标记阻塞。
 - **2026-06-12** R7：调研 AIRP-State-Protocol（前端契约，AgentBus）。确立联动仅作可选适配层、不进核心。README 置顶「通用、不捆绑」理念 + 新增「生态联动（可选）」节。
 - **2026-06-12** ADR-007：核心改为前端无关并暴露组合点（`GatewayState::build`/`Gateway::state`/`from_state` + re-export `Bridge` 等）。任何第三方可在共享 bridge 上自建任意前端。`cargo check` 通过。
+- **2026-06-13** mock-transport e2e 集成测试 + CI workflow（fmt/clippy/test on Linux），CI 全绿，核心通路证实。
+- **2026-06-13** R8：MCP-Server 回执——stdio 契约全确认、HTTP 完成（Stage 3 解锁）、协议版本 2025-03-26。落地版本协商捕获（`McpClient::protocol_version()`）。clippy/fmt 清零。
