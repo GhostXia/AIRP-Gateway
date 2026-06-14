@@ -36,3 +36,38 @@ jobs:
 
       - name: Test
         run: cargo test --all-targets
+
+  e2e-stdio:
+    name: real cross-process stdio e2e
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout gateway
+        uses: actions/checkout@v4
+        with:
+          path: gateway
+
+      - name: Checkout AIRP-MCP-Server
+        uses: actions/checkout@v4
+        with:
+          repository: GhostXia/AIRP-MCP-Server
+          path: mcp-server
+          fetch-depth: 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            gateway
+            mcp-server
+
+      - name: Build real airp-mcp from source
+        run: cargo build --release --manifest-path mcp-server/Cargo.toml
+
+      - name: Run cross-process stdio e2e
+        env:
+          # Built with CARGO_BUILD_TARGET set, so output lives under the triple dir.
+          AIRP_MCP_BIN: ${{ github.workspace }}/mcp-server/target/x86_64-unknown-linux-gnu/release/airp-mcp
+        run: cargo test --manifest-path gateway/Cargo.toml --test e2e_stdio -- --nocapture
