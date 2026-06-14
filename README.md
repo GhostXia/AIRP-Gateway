@@ -183,7 +183,7 @@ Gateway 作为 MCP 客户端，对接**任意** MCP server：
 | 传输 | 状态 |
 |------|------|
 | **stdio** | ✅ 可用。拉起子进程，行分隔 JSON-RPC，完成 `initialize` 握手。CI 用自带 mock 跑真实跨进程 e2e 验证（零外部依赖） |
-| **HTTP (streamable)** | 🔵 进行中。基础 JSON-RPC POST 可用；`Mcp-Session-Id` 回传 / `MCP-Protocol-Version` 头 / SSE 解析待补——见 [`docs/DESIGN.md`](docs/DESIGN.md) Stage 3 |
+| **HTTP (streamable)** | ✅ 可用。`Mcp-Session-Id` 捕获/回传、`MCP-Protocol-Version`（协商值）头、`application/json` 与 `text/event-stream`(SSE) 响应。CI 用 in-process mock（真实 TCP，强制校验头）e2e 验证 |
 
 新增传输 = `impl McpTransport`，bridge 无感。
 

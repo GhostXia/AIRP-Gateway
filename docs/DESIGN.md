@@ -182,11 +182,11 @@ src/
 - 退出标准：[ ] transport 增 `request_stream` [ ] handler 返回 `axum::response::Sse` [ ] 背压/断连处理
 - 指引：先定上游增量形态（MCP progress notification？SSE 帧？）再写映射。
 
-### Stage 3 · HTTP 传输补全 ⬜（**已解锁**，R8）
-- 目标：合规 streamable HTTP 客户端。
-- 前置依赖已满足：AIRP-MCP-Server 的 `/mcp/v1` 已真实挂载 rmcp streamable-http（真派发、`Mcp-Session-Id`、`MCP-Protocol-Version`、`AIRP_HTTP_TOKEN` bearer、CORS；其侧 CI 断言 session 头 + tools/list=38）。
-- 退出标准：[ ] initialize 取 `Mcp-Session-Id` 并在后续请求回传 [ ] 后续请求带 `MCP-Protocol-Version` 头（值用**协商版本** `McpClient::protocol_version()`，已捕获）[ ] 解析 `text/event-stream` 响应体
-- 指引：见 R4/R8。版本协商已落地（client 捕获服务端返回版本）。
+### Stage 3 · HTTP 传输补全 ✅（CI 验证，自给自足）
+- 目标：合规 streamable HTTP 客户端。**已完成**。
+- 退出标准：[x] initialize 取 `Mcp-Session-Id` 并在后续请求回传 [x] 后续请求带 `MCP-Protocol-Version` 头（协商值，transport 从 initialize 响应体捕获）[x] 解析 `text/event-stream` 响应体（`parse_sse` + 单测）
+- 验证：`tests/e2e_http.rs` —— in-process axum mock MCP server（真实 TCP），**强制**校验 initialize 之后请求携带 session + version 头，否则报错。全链路（前端 HTTP → bridge → HttpTransport → mock）CI 全绿。零外部依赖。
+- 实现要点：session-id 与 negotiated version 由 `HttpTransport` 自身在响应中捕获（响应头 / `result.protocolVersion`），不需把 `McpClient` 状态下穿到 transport。
 
 ### Stage 4 · 路由/兼容增强 ⬜
 - 目标：覆盖 OpenAI 兼容端点等复杂映射（见 §7 开放问题）。
@@ -283,7 +283,7 @@ src/
 
 - ⛔ `D:\` 构建脚本执行被系统策略拒（os error 5）→ 必须重定向 target 目录；Core 集成同样受影响。
 - ✅ ~~AIRP-MCP-Server 的 http 模式是空壳~~（R6）→ 已由上游修复完成（R8）。
-- ⚠️ 本侧 http 传输缺 session-id / 协议头 / SSE 解析 → 待实现（Stage 3，已解锁）。`MCP-Protocol-Version` 须用协商版本（上游为 2025-03-26）。
+- ✅ ~~本侧 http 传输缺 session-id / 协议头 / SSE 解析~~ → 已实现并 CI 验证（Stage 3 完成）。
 - ⚠️ 无请求超时、无上游重连、无健康检查（Stage 6）。
 - ⚠️ initialize 未做版本协商校验。
 - ⚠️ stdio 未实现规范的关机序列（关 stdin → 等退出 → SIGTERM/KILL）。
@@ -321,3 +321,4 @@ src/
 - **2026-06-13** R8：MCP-Server 回执——stdio 契约全确认、HTTP 完成（Stage 3 解锁）、协议版本 2025-03-26。落地版本协商捕获（`McpClient::protocol_version()`）。clippy/fmt 清零。
 - **2026-06-14** Stage 1 核心验证：CI `e2e-stdio` job 从源码编译真 `airp-mcp` + 真子进程，断言 initialize 握手 + tools/list 成功（CI 全绿）。新增 `McpClient::list_tools()`。**发现上游 bug**：MCP-Server `main` 的 stdio 服务 `tools/list` 为空（0 工具），`list_characters` -32602。工具分发断言改为条件式，待上游修复。已回报 MCP 方。
 - **2026-06-14** Stage 1 完成（解耦）：e2e 改用本仓库自带 `examples/mock_mcp_stdio.rs`，不再依赖 AIRP-MCP-Server。完整链路（HTTP→bridge→真子进程→tools/call）CI 全绿。符合「通用、不捆绑」。`e2e-stdio` job 自给自足。
+- **2026-06-14** Stage 3 完成：HTTP 客户端补全（session-id 回传 + `MCP-Protocol-Version` 协商值头 + SSE 解析 `parse_sse` + 单测）。`tests/e2e_http.rs` 用 in-process axum mock（真实 TCP，强制校验头）验证全链路，CI 全绿，零外部依赖。stdio + HTTP 两传输均已端到端验证。
