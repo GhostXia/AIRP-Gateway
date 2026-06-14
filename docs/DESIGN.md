@@ -162,10 +162,10 @@ src/
 - 退出标准：[x] 目录与分层成型 [x] `cargo check` 通过 [x] 纯库无 exe
 - 指引：已交付。进入 Stage 1。
 
-### Stage 1 · 端到端打通单个工具调用 🔵（核心已验，工具待上游）
-- **CI 已验证**（`e2e-stdio` job）：CI 从源码编译真 `airp-mcp` → Gateway 拉起真子进程 → `initialize` 握手 + `tools/list` 成功。证实了 mock 覆盖不到的：子进程 spawn、真实管道上的 NDJSON 帧、活的 MCP 握手。
-- **⚠️ 上游问题（R8 续）**：从 AIRP-MCP-Server `main` 编译出的二进制 `tools/list` 返回 `{"tools":[]}`（0 工具），`tools/call list_characters` → `-32602 tool not found`。即其 stdio 服务未注册任何工具。Gateway 侧正确：握手成功、错误码正确透传。工具分发断言已设为"有则验、无则跳"，待上游修复后自动生效。
-- 待办：上游修好工具注册后，把 e2e 的工具分发改回强制断言。
+### Stage 1 · 端到端打通单个工具调用 ✅（自给自足，已解耦上游）
+- **CI 已验证**（`e2e-stdio` job，全绿）：用**本仓库自带** `examples/mock_mcp_stdio.rs`（NDJSON MCP server）拉起真子进程，跑完整链路：前端 HTTP → bridge 路由 → McpClient → 真子进程 → `initialize` 握手 → `tools/list` → `tools/call` → 结果。证实 mock 传输覆盖不到的：subprocess spawn、真实管道 NDJSON 帧、活的 MCP 握手。
+- **设计原则落地**：e2e **不依赖任何外部项目**（符合「通用、不捆绑」）。测试 server-agnostic——发现首个工具再路由调用；`AIRP_MCP_BIN` 指向任意 MCP server 即可 interop。
+- **上游旁注（R8 续）**：曾用从 AIRP-MCP-Server `main` 编译的二进制测试，发现其 stdio `tools/list` 为空（0 工具）。这是上游 bug，已回报，**不阻塞本项目**——故改用自带 mock 解耦。
 
 #### Stage 1（原始计划）
 - 目标：起一个真实 AIRP-MCP-Server（stdio：`airp-mcp mcp --data-dir ./data`），Gateway 配一条 `RouteRule` 映射到某 tool（如 `list_characters`），发前端请求拿到真实结果。
@@ -320,3 +320,4 @@ src/
 - **2026-06-13** mock-transport e2e 集成测试 + CI workflow（fmt/clippy/test on Linux），CI 全绿，核心通路证实。
 - **2026-06-13** R8：MCP-Server 回执——stdio 契约全确认、HTTP 完成（Stage 3 解锁）、协议版本 2025-03-26。落地版本协商捕获（`McpClient::protocol_version()`）。clippy/fmt 清零。
 - **2026-06-14** Stage 1 核心验证：CI `e2e-stdio` job 从源码编译真 `airp-mcp` + 真子进程，断言 initialize 握手 + tools/list 成功（CI 全绿）。新增 `McpClient::list_tools()`。**发现上游 bug**：MCP-Server `main` 的 stdio 服务 `tools/list` 为空（0 工具），`list_characters` -32602。工具分发断言改为条件式，待上游修复。已回报 MCP 方。
+- **2026-06-14** Stage 1 完成（解耦）：e2e 改用本仓库自带 `examples/mock_mcp_stdio.rs`，不再依赖 AIRP-MCP-Server。完整链路（HTTP→bridge→真子进程→tools/call）CI 全绿。符合「通用、不捆绑」。`e2e-stdio` job 自给自足。
