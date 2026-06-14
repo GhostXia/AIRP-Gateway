@@ -56,4 +56,46 @@ Gateway 支持两种上游传输：**stdio** 与 **HTTP**。
 
 ## 不需要改的
 
-stdio 模式、数据模型、工具实现，全部维持现状。
+stdio 模式的工具实现、数据模型，全部维持现状。
+
+---
+
+# 第二批需求（stdio 真实联调 + 强制 CI 验证）
+
+> 建档 2026-06-13。Gateway 核心已完成并 CI 全绿（mock 传输 e2e 测试）。下面是与 MCP-Server 做"真实进程"联调所需。
+
+## A. stdio（优先：确认契约 + 提供可执行）
+
+Gateway 以子进程拉起 `airp-mcp mcp --data-dir <dir>`，行分隔 JSON-RPC 通信。请确认/保证（任一不符请告知）：
+
+| # | 契约 |
+|---|------|
+| A1 | `airp-mcp mcp --data-dir ./data` 进入 stdio MCP 服务，stdin 收 / stdout 发 |
+| A2 | stdout 每行一个完整 JSON-RPC 2.0 对象，对象内无内嵌换行（newline-delimited，非 Content-Length 帧） |
+| A3 | 日志/诊断只写 **stderr**，绝不污染 stdout |
+| A4 | 生命周期：`initialize`（返回真实 `protocolVersion`+`capabilities`+`serverInfo`）→ 接受 `notifications/initialized` → 处理 `tools/list`、`tools/call`。Gateway 发送 `protocolVersion = "2025-06-18"`；若你方版本不同，回你方版本并告知我适配 |
+| A5 | 冒烟工具：指定一个**只读、空目录可成功、无副作用**的工具（建议 `list_characters`，空目录返回空列表）。给出：工具名、arguments JSON schema、result 结构示例 |
+| A6 | stdin 关闭后进程自行退出 |
+
+**交付物（关键）**：提供 Linux x86_64 的 `airp-mcp` 可执行文件——经 GitHub Release 资产或 CI artifact 发布。原因：Gateway CI 跑在 Linux，需下载二进制做真实跨进程 e2e。若只能产 Windows 产物，告知我改用 windows runner。
+
+## B. HTTP（次要，当前阻塞）
+
+见本文档上半部 R1–R8。建议给 rmcp 开 `transport-streamable-http-server` feature + 挂载其 router 替换手写桩。不阻塞 stdio，可后做。
+
+## C. 验证方式（硬性：必须用 GitHub Actions workflow，不接受口头"已完成"）
+
+AIRP-MCP-Server 仓库须有 GitHub Actions workflow，且包含真实功能验证，CI 必须为绿：
+
+1. 构建 + 单元/集成测试（`cargo build` / `cargo test`）。
+2. **stdio e2e 测试（必须）**：测试内以子进程或进程内启动 MCP 服务，发 `initialize` → `notifications/initialized` → `tools/call`（用 A5 工具），断言：initialize 返回非空 `protocolVersion`+`serverInfo`；tools/call 返回**真实结果**（空目录 `list_characters` 返回空列表），非空 `{}` 或桩。
+3. **http e2e 测试**（HTTP 完成后必须加）：真实 MCP 客户端打 `/mcp/v1`，断言响应头含 `Mcp-Session-Id` 且 tools/call 返回真实内容。
+4. 完成后把 CI run 链接发我（须显示 success）。
+
+以 CI 绿为准，不接受"本地测过"或截图——与 Gateway 一致（Gateway CI 已 fmt/clippy/test 全绿）。
+
+## D. 验收（Gateway 据此判定可联调）
+
+- MCP-Server CI 绿，含 A 段 stdio e2e 测试。
+- Gateway 拿到 Linux `airp-mcp` 二进制（release/artifact）。
+- Gateway CI 加 job：下载二进制 → 真实子进程 → initialize + tools/call 断言真实数据。两侧 CI 同绿 = 对接成功。
