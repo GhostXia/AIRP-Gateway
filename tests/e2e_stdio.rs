@@ -57,6 +57,14 @@ async fn list_characters_via_real_stdio_server() {
     };
 
     let gateway = Gateway::build(config).await.expect("build gateway");
+
+    // Diagnostic: dump the real server's tool inventory so we use exact names.
+    let client = gateway.state().pool.get("airp").expect("upstream present");
+    match client.list_tools().await {
+        Ok(tools) => eprintln!("TOOLS/LIST = {tools}"),
+        Err(e) => eprintln!("tools/list failed: {e}"),
+    }
+
     let app = gateway.router();
 
     let req = Request::builder()

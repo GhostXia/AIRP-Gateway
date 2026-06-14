@@ -88,6 +88,12 @@ impl McpClient {
         self.invoke("tools/call", params).await
     }
 
+    /// List available tools (raw `tools/list` result).
+    pub async fn list_tools(&self) -> Result<Value> {
+        self.ensure_initialized().await?;
+        self.invoke("tools/list", json!({})).await
+    }
+
     /// Read an MCP resource, returning its `result` payload.
     pub async fn read_resource(&self, uri: &str) -> Result<Value> {
         self.ensure_initialized().await?;
