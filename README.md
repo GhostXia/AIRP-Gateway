@@ -172,7 +172,7 @@ target = { kind = "tool", name = "your_tool_name" }
   → 上游 MCP 服务 → result → 回前端
 ```
 
-完整设计与开发追踪见 [`docs/DESIGN.md`](docs/DESIGN.md)。
+完整设计与开发追踪见 [`docs/DESIGN.md`](docs/DESIGN.md)；前瞻计划书（当前状态 + 路线图 + 版本规划）见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
 ---
 
