@@ -252,6 +252,17 @@ src/
   - 我方继续 advertise 最新版本（2025-06-18，符合 spec「发最新」），由服务端降级、我方捕获——无需改常量。
   - Gateway CI 可加 job：下载 `airp-mcp-linux-x86_64` → 真实子进程 → initialize + `list_characters` 断言（真实跨进程 e2e，Stage 1 收尾）。
 
+**R9 · 参考项目 ST-ClaudeCacheGateway（边界印证 + Stage 2/4 借鉴）**
+- 对象：[ST-ClaudeCacheGateway](https://github.com/shanye5593/ST-ClaudeCacheGateway)，Node.js 零依赖本地代理，坐 SillyTavern 前端 ↔ **LLM API(Claude/OpenAI)** 之间。核心：`[[CACHE_BREAK]]` 标记 → Claude `cache_control`（prompt caching 省钱省延迟）；chat/completions ↔ `/v1/messages` 转换；SSE 流式；双上游模式。
+- 关系判定：它处于 **Agent/LLM 调用那一跳**，下游是 LLM API（非 MCP）。AIRP-Gateway 下游是 MCP server。**不同 hop、不同协议**。在 AIRP 架构中它的位置在 `Agent → [缓存代理] → Claude`，**不在本项目这一跳**。
+- 结论（不并入核心）：
+  1. 它讲 LLM API、不讲 MCP，接不上我们的上游（除非加非-MCP 的 LLM passthrough 传输 → 违背纯桥定位）。
+  2. prompt caching / 格式转换是 **LLM 跳的关注点**，放进纯协议桥违反设计戒律 → **印证边界**：缓存/格式转换挡在桥之外。
+- 借鉴价值（概念，非代码；其为 JS，本项目 Rust）：
+  - prompt caching 技法 → 归 Agent / AIRP-MCP-Server，可转告上游。
+  - chat/completions ↔ messages 转换 → 印证 Stage 4「OpenAI 兼容端点 + 可选 request/response 变换层」（注意：我们目标是映射到 MCP 工具，非 LLM messages，形似神不同）。
+  - SSE 流式透传 → Stage 2 流式的帧处理可参考。
+
 **R5 · 工具链 / 构建环境**
 - 发现：
   - 本机无 MSVC `link.exe`；装有 `stable-x86_64-pc-windows-gnu`（自带 MinGW）。→ `.cargo/config.toml` 锁 gnu。

@@ -49,11 +49,14 @@
 - 目标：`RouteTarget::Tool{stream:true}` 经 `axum::Sse` 把上游增量结果推给前端（当前为 `Unimplemented` 桩）。
 - 价值：聊天/长任务实时回显；当前唯一明确功能缺口。
 - 验收：`McpTransport` 增 `request_stream`；mock 产出多帧；e2e 断言前端收到有序 SSE 流；背压/断连处理。
+- 参考：ST-ClaudeCacheGateway 的 SSE 流式透传（DESIGN R9）。
 
 **Stage 4 · 路由与兼容增强**
 - 目标：覆盖复杂映射（如 OpenAI 兼容 `/v1/chat/completions`）；可选 request/response 变换层（保持核心纯净）；多上游 fan-out 策略。
 - 价值：对接更多现成前端，降低接入门槛。
 - 验收：变换层为可选插件，不进 `bridge`；e2e 覆盖一种兼容端点。
+- 参考：ST-ClaudeCacheGateway 的 chat/completions ↔ messages 转换（DESIGN R9）。注意：本项目映射到 MCP 工具，非 LLM messages。
+- 边界提醒：prompt caching / 格式转换属 LLM 跳（Agent / MCP-Server），不进纯桥。
 
 ### 中期
 
