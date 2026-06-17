@@ -28,6 +28,7 @@
 | HTTP 传输（session-id、协商版本头、JSON + SSE） | ✅ | 真实 TCP e2e（in-process mock） |
 | 协议版本协商捕获 | ✅ | e2e |
 | 前端无关核心（`GatewayState::build` + 暴露 `Bridge` 等） | ✅ | API |
+| 安全：stdio 命令白名单(opt-in) + 默认 loopback + 暴露告警 | ✅ | 单测（ADR-008） |
 
 ### 验证策略（已确立）
 - **全部经 GitHub Actions workflow 验证**，CI 绿为准。
@@ -35,7 +36,42 @@
 - 三类检查：`test`(fmt + clippy -D warnings + 单测 + http e2e) ｜ `e2e-stdio`(跨进程)。
 
 ### 里程碑进度（详见 DESIGN §5）
-- ✅ Stage 0 脚手架 ｜ ✅ Stage 1 stdio 端到端 ｜ ✅ Stage 3 HTTP 传输
+- ✅ Stage 0 脚手架 ｜ ✅ Stage 1 stdio 端到端 ｜ ✅ Stage 3 HTTP 传输 ｜ ✅ 安全加固（ADR-008）
+- ⬜ Stage 2 流式（**下一步**）｜ ⬜ Stage 4 路由增强 ｜ ⬜ Stage 5 嵌入 Core ｜ ⬜ Stage 6 硬化
+
+---
+
+## ⭐ 接力指引（给下一个 agent）
+
+> 冷启动接手本项目，按此即可。
+
+**先读**：本文件 §一/§二 → `DESIGN.md` §4（架构快照）+ §5（阶段看板）。真理顺序：源码 > DESIGN > 本文件。
+
+**构建 / 验证（本机有坑，必读）**：
+- 无 MSVC linker，用 GNU 工具链；`D:\` 盘构建脚本执行被系统策略拒（`os error 5`），target 目录须重定向到 C:。
+- 本机只能 `check` / `fmt` / `clippy`（无 codegen）；**完整 `test` 跑不了**（缺 `dlltool`）→ **测试一律靠 CI 验证**。
+```powershell
+$env:CARGO_TARGET_DIR = "C:\Users\xiach\airp-gw-target"
+cargo +stable-x86_64-pc-windows-gnu fmt --all
+cargo +stable-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings
+```
+- 改完 → commit → push → `gh run watch <id> --repo GhostXia/AIRP-Gateway --exit-status`。CI 绿才算完成。
+- 提交信息含双引号时，PowerShell here-string 会被 git 拆碎 → 用单行 `-m` 或 `$msg` 变量。
+
+**仓库地图**：
+| 路径 | 作用 |
+|------|------|
+| `src/config.rs` | 配置 + `validate()`（安全校验） |
+| `src/server/` | axum 前端：`mod.rs`(Gateway/router/run) `middleware.rs`(auth/cors) `handlers.rs`(dispatch) |
+| `src/bridge/mod.rs` | 请求→MCP 分发（`DispatchOutcome::Stream` 是 Stage 2 桩） |
+| `src/mcp/` | `client.rs`(握手/call_tool/list_tools) `pool.rs` `transport/{mod,stdio,http}.rs` `types.rs` |
+| `examples/mock_mcp_stdio.rs` | 自带 mock（e2e 用，勿删） |
+| `tests/{integration,e2e_stdio,e2e_http}.rs` | mock-传输 / 跨进程 / 真实 HTTP |
+| `.github/workflows/ci.yml` | 两 job：`test` + `e2e-stdio` |
+
+**铁律（不得违反，详见 DESIGN §1/§2）**：纯协议桥、库优先、传输无关、不捆绑任何项目、新功能必须自给自足 CI 验证。
+
+**下一步 = Stage 2 流式**（见下）。入口：`bridge::DispatchOutcome::Stream` + `handlers::dispatch` 的 stream 分支 + `McpTransport` 加 `request_stream`。
 
 ---
 
@@ -67,7 +103,8 @@
 
 **Stage 6 · 硬化（生产可用）**
 - 目标：请求超时 + 取消通知；上游重连 / 健康检查；指标与追踪；限流键可选（IP/token）。
-- 价值：生产环境稳定性。
+- 安全续（ADR-008 留项）：HTTP upstream SSRF 防护（url 指向内网）、上游响应大小上限、stdio args 校验。
+- 价值：生产环境稳定性 + 安全。
 - 验收：故障注入测试（上游崩溃/超时/慢响应）经 CI 验证。
 
 ### 远期展望
@@ -83,7 +120,7 @@
 
 | 版本 | 内容 | 状态 |
 |------|------|------|
-| 0.1.x | 核心桥 + stdio/HTTP 传输 + 鉴权/限流/路由 + 自给自足 CI | 当前 |
+| 0.1.x | 核心桥 + stdio/HTTP 传输 + 鉴权/限流/路由 + 安全(ADR-008) + 自给自足 CI | 当前 |
 | 0.2.0 | Stage 2 流式 | 计划 |
 | 0.3.0 | Stage 4 路由/兼容增强 | 计划 |
 | 0.4.0 | Stage 6 硬化（超时/重连/指标） | 计划 |
