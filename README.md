@@ -144,10 +144,17 @@ target = { kind = "tool", name = "your_tool_name" }
 | `cors` | `allow_any`，或 `allow_origins = [...]` |
 | `upstreams[]` | 上游 MCP 服务：`name` + `transport`(`stdio`\|`http`) |
 | `routes[]` | `path` + `method` + `upstream` + `target`(`tool`\|`resource`) |
+| `allowed_commands` | stdio 命令白名单（**空=放行**；非空时 stdio `command` 须按全串/文件名匹配，否则启动失败） |
 
 环境变量覆盖（最高优先）：`AIRP_GW_BIND`、`AIRP_GW_ACCESS_KEY`。
 
 中间件顺序：**CORS → 限流 → 鉴权 → 分发**。
+
+### 安全
+- **默认仅本机**：`bind` 默认 `127.0.0.1`。改 `0.0.0.0` 即显式对外暴露。
+- **暴露告警**：绑定非 loopback 且未设 `access_key` 时，启动打印响亮告警（无鉴权暴露到网络）。
+- **stdio 命令白名单**：`allowed_commands` 非空时，拒绝启动不在白名单内的上游命令（防 config 拉起任意程序）。默认放行以保持通用。
+- 威胁模型：config 为 host 静态加载，上游/agent 无运行时改 config 的入口。详见 [`docs/DESIGN.md`](docs/DESIGN.md) ADR-008。
 
 ---
 

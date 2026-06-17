@@ -24,6 +24,12 @@ pub struct GatewayConfig {
     pub upstreams: Vec<UpstreamConfig>,
     /// Declarative frontend-path -> MCP-operation mappings.
     pub routes: Vec<RouteRule>,
+    /// Allowlist of permitted stdio `command`s (defense-in-depth against a
+    /// config that spawns arbitrary programs). **Empty = allow any** (config is
+    /// operator-trusted). Non-empty = a stdio upstream's `command` must match an
+    /// entry by full string *or* file name, else [`GatewayConfig::validate`]
+    /// fails. Has no effect on HTTP upstreams.
+    pub allowed_commands: Vec<String>,
 }
 
 impl Default for GatewayConfig {
@@ -35,6 +41,7 @@ impl Default for GatewayConfig {
             cors: CorsConfig::default(),
             upstreams: Vec::new(),
             routes: Vec::new(),
+            allowed_commands: Vec::new(),
         }
     }
 }
@@ -122,6 +129,17 @@ fn default_method() -> String {
     "POST".to_string()
 }
 
+/// True if `command` matches an allowlist entry by full string or file name
+/// (so `airp-mcp` matches `/usr/bin/airp-mcp`).
+fn command_allowed(command: &str, allow: &[String]) -> bool {
+    let base = std::path::Path::new(command)
+        .file_name()
+        .and_then(|s| s.to_str());
+    allow
+        .iter()
+        .any(|a| a == command || Some(a.as_str()) == base)
+}
+
 /// What MCP primitive a route invokes.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -151,6 +169,27 @@ impl GatewayConfig {
         Ok(cfg)
     }
 
+    /// Validate security-relevant invariants. Call before building transports.
+    ///
+    /// Currently: if [`allowed_commands`](Self::allowed_commands) is non-empty,
+    /// every stdio upstream's `command` must be allowed.
+    pub fn validate(&self) -> Result<()> {
+        if self.allowed_commands.is_empty() {
+            return Ok(());
+        }
+        for up in &self.upstreams {
+            if let TransportConfig::Stdio { command, .. } = &up.transport {
+                if !command_allowed(command, &self.allowed_commands) {
+                    return Err(GatewayError::Config(format!(
+                        "stdio command `{command}` (upstream `{}`) is not in allowed_commands",
+                        up.name
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Apply `AIRP_GW_*` environment overrides (top-level scalars only).
     fn apply_env(&mut self) {
         if let Ok(v) = std::env::var("AIRP_GW_BIND") {
@@ -161,5 +200,63 @@ impl GatewayConfig {
         if let Ok(v) = std::env::var("AIRP_GW_ACCESS_KEY") {
             self.access_key = if v.is_empty() { None } else { Some(v) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stdio_up(name: &str, command: &str) -> UpstreamConfig {
+        UpstreamConfig {
+            name: name.into(),
+            transport: TransportConfig::Stdio {
+                command: command.into(),
+                args: vec![],
+                cwd: None,
+            },
+        }
+    }
+
+    fn cfg_with(upstreams: Vec<UpstreamConfig>, allowed: Vec<&str>) -> GatewayConfig {
+        GatewayConfig {
+            upstreams,
+            allowed_commands: allowed.into_iter().map(String::from).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn empty_allowlist_permits_any_command() {
+        let cfg = cfg_with(vec![stdio_up("a", "/bin/bash")], vec![]);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn allowlist_rejects_unlisted_command() {
+        let cfg = cfg_with(vec![stdio_up("a", "/bin/bash")], vec!["airp-mcp"]);
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn allowlist_matches_by_basename() {
+        let cfg = cfg_with(
+            vec![stdio_up("a", "/usr/local/bin/airp-mcp")],
+            vec!["airp-mcp"],
+        );
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn allowlist_ignores_http_upstreams() {
+        let http = UpstreamConfig {
+            name: "h".into(),
+            transport: TransportConfig::Http {
+                url: "http://127.0.0.1:3000/mcp/v1".into(),
+                auth_token: None,
+            },
+        };
+        let cfg = cfg_with(vec![http], vec!["airp-mcp"]);
+        assert!(cfg.validate().is_ok());
     }
 }

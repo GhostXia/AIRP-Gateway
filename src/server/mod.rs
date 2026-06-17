@@ -29,6 +29,8 @@ impl GatewayState {
     /// built-in axum HTTP surface) can build state here and dispatch via
     /// [`GatewayState::bridge`] without using the [`Gateway`] server at all.
     pub async fn build(config: GatewayConfig) -> Result<Arc<Self>> {
+        // Security gate: reject disallowed stdio commands before spawning anything.
+        config.validate()?;
         let pool = Arc::new(UpstreamPool::from_config(&config.upstreams).await?);
         let bridge = Bridge::new(pool.clone(), config.routes.clone());
         Ok(Arc::new(GatewayState {
@@ -117,6 +119,19 @@ impl Gateway {
             .bind
             .parse()
             .map_err(|e| GatewayError::Config(format!("invalid bind address: {e}")))?;
+
+        // Warn loudly about the dangerous combo: reachable off-host with no auth.
+        if !addr.ip().is_loopback() {
+            if self.state.config.access_key.is_none() {
+                tracing::warn!(
+                    %addr,
+                    "airp-gateway bound to a NON-LOOPBACK address WITHOUT access_key — \
+                     it is exposed to the network unauthenticated; set access_key or bind 127.0.0.1"
+                );
+            } else {
+                tracing::info!(%addr, "airp-gateway exposed off-host (auth enabled)");
+            }
+        }
 
         let app = self.router();
         let listener = tokio::net::TcpListener::bind(addr).await?;
