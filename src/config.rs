@@ -298,8 +298,14 @@ fn url_is_private_or_loopback(url: &str) -> Option<&'static str> {
         if ip.is_unspecified() {
             return Some("unspecified address");
         }
-        if ip.is_link_local() {
-            return Some("link-local address");
+        match ip {
+            std::net::IpAddr::V4(v4) if v4.is_link_local() => {
+                return Some("link-local address");
+            }
+            std::net::IpAddr::V6(v6) if v6.is_link_local() => {
+                return Some("link-local address");
+            }
+            _ => {}
         }
         // Private / shared / benchmarking ranges per RFC 1918 + RFC 6890.
         if is_private_or_reserved(ip) {
@@ -328,7 +334,11 @@ fn is_private_or_reserved(ip: std::net::IpAddr) -> bool {
                 // 0.0.0.0/8, 100.64.0.0/10 (CGNAT), 192.0.0.0/24, 192.0.2.0/24,
                 // 198.18.0.0/15, 240.0.0.0/4 — cover via std lib where available.
                 let o = v4.octets();
-                o[0] == 0 || (o[0] == 100 && o[1] >= 64) || (o[0] == 192 && o[1] == 0) || (o[0] == 198 && (o[1] == 18 || o[1] == 19)) || o[0] >= 240
+                o[0] == 0
+                    || (o[0] == 100 && o[1] >= 64)
+                    || (o[0] == 192 && o[1] == 0)
+                    || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
+                    || o[0] >= 240
             }
         }
         std::net::IpAddr::V6(v6) => {
@@ -452,10 +462,7 @@ mod tests {
 
     #[test]
     fn ssrf_allows_public_host() {
-        let cfg = cfg_with_http(
-            vec![http_up("a", "https://example.com/mcp/v1")],
-            true,
-        );
+        let cfg = cfg_with_http(vec![http_up("a", "https://example.com/mcp/v1")], true);
         assert!(cfg.validate().is_ok());
     }
 
@@ -481,7 +488,11 @@ mod tests {
     #[test]
     fn args_rejected_when_allowlist_active_and_arbitrary_args_false() {
         let cfg = GatewayConfig {
-            upstreams: vec![stdio_up_with_args("a", "airp-mcp", vec!["mcp", "--data-dir", "/tmp"])],
+            upstreams: vec![stdio_up_with_args(
+                "a",
+                "airp-mcp",
+                vec!["mcp", "--data-dir", "/tmp"],
+            )],
             allowed_commands: vec!["airp-mcp".into()],
             allow_arbitrary_args: false,
             ..Default::default()
@@ -492,7 +503,11 @@ mod tests {
     #[test]
     fn args_allowed_when_arbitrary_args_opt_in() {
         let cfg = GatewayConfig {
-            upstreams: vec![stdio_up_with_args("a", "airp-mcp", vec!["mcp", "--data-dir", "/tmp"])],
+            upstreams: vec![stdio_up_with_args(
+                "a",
+                "airp-mcp",
+                vec!["mcp", "--data-dir", "/tmp"],
+            )],
             allowed_commands: vec!["airp-mcp".into()],
             allow_arbitrary_args: true,
             ..Default::default()

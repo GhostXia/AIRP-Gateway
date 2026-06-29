@@ -8,8 +8,8 @@
 //! Also includes fault-injection tests: upstream crash, upstream timeout,
 //! upstream returning invalid JSON, and upstream returning a JSON-RPC error.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::body::Body;
@@ -17,7 +17,9 @@ use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use tower::ServiceExt; // for `oneshot`
 
-use airp_gateway::mcp::types::{JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+use airp_gateway::mcp::types::{
+    JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+};
 use airp_gateway::{
     Bridge, Gateway, GatewayConfig, GatewayState, McpClient, McpTransport, RouteRule, RouteTarget,
     UpstreamPool,
@@ -239,7 +241,9 @@ impl McpTransport for CrashAfterInitTransport {
                 "upstream process exited".to_string(),
             ))
         } else {
-            Err(airp_gateway::GatewayError::Transport("not initialized".to_string()))
+            Err(airp_gateway::GatewayError::Transport(
+                "not initialized".to_string(),
+            ))
         }
     }
 

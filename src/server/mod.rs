@@ -31,7 +31,14 @@ impl GatewayState {
     pub async fn build(config: GatewayConfig) -> Result<Arc<Self>> {
         // Security gate: reject disallowed stdio commands before spawning anything.
         config.validate()?;
-        let pool = Arc::new(UpstreamPool::from_config(&config.upstreams, config.upstream_timeout_secs, config.max_response_bytes).await?);
+        let pool = Arc::new(
+            UpstreamPool::from_config(
+                &config.upstreams,
+                config.upstream_timeout_secs,
+                config.max_response_bytes,
+            )
+            .await?,
+        );
         let bridge = Bridge::new(pool.clone(), config.routes.clone());
         Ok(Arc::new(GatewayState {
             config,

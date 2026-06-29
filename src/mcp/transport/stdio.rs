@@ -89,9 +89,7 @@ impl StdioTransport {
                             continue;
                         }
                         // Try to parse as a notification (no `id`).
-                        if let Ok(note) =
-                            serde_json::from_str::<JsonRpcNotification>(&line)
-                        {
+                        if let Ok(note) = serde_json::from_str::<JsonRpcNotification>(&line) {
                             let _ = notification_tx_r.send(note);
                             continue;
                         }

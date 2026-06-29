@@ -44,8 +44,8 @@ impl UpstreamPool {
                     return Err(e);
                 }
             };
-            let client = McpClient::new(up.name.clone(), Arc::from(t))
-                .with_request_timeout(timeout);
+            let client =
+                McpClient::new(up.name.clone(), Arc::from(t)).with_request_timeout(timeout);
             clients.push((up.name.clone(), Arc::new(client)));
         }
         let map = clients.into_iter().collect();

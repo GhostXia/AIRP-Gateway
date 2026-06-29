@@ -35,14 +35,21 @@ pub trait McpTransport: Send + Sync {
 /// `max_response_bytes` is applied to HTTP transports to cap the upstream
 /// response body size. stdio transports do their own line-by-line framing
 /// and are not subject to this limit (the reader task drains on EOF).
-pub async fn connect(cfg: &TransportConfig, max_response_bytes: usize) -> Result<Box<dyn McpTransport>> {
+pub async fn connect(
+    cfg: &TransportConfig,
+    max_response_bytes: usize,
+) -> Result<Box<dyn McpTransport>> {
     match cfg {
         TransportConfig::Stdio { command, args, cwd } => {
             let t = stdio::StdioTransport::connect(command, args, cwd.as_deref()).await?;
             Ok(Box::new(t))
         }
         TransportConfig::Http { url, auth_token } => {
-            let t = http::HttpTransport::with_max_response(url, auth_token.clone(), max_response_bytes)?;
+            let t = http::HttpTransport::with_max_response(
+                url,
+                auth_token.clone(),
+                max_response_bytes,
+            )?;
             Ok(Box::new(t))
         }
     }
