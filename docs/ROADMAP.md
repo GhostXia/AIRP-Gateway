@@ -29,7 +29,9 @@
 | 协议版本协商捕获 + 协商校验（不支持则断开） | ✅ | e2e + 单测 |
 | 前端无关核心（`GatewayState::build` + 暴露 `Bridge` 等） | ✅ | API |
 | 安全：stdio 命令白名单(opt-in) + 默认 loopback + 暴露告警 | ✅ | 单测（ADR-008） |
-| **健壮性首批（ADR-009）**：HTTP SSRF 阵御 / 请求体上限 / 错误脱敏 / 优雅关机 / stdio 规范关机序列 + EOF drain / notification broadcast / UpstreamPool 构建回滚 | ✅ | 单测（分支 `feat/robustness-and-security-hardening`，待 commit + CI） |
+| **健壮性首批（ADR-009）**：HTTP SSRF 阵御 / 请求体上限 / 错误脱敏 / 优雅关机 / stdio 规范关机序列 + EOF drain / notification broadcast / UpstreamPool 构建回滚 | ✅ | 单测 + CI 全绿 |
+| **Stage 6 深化（P2a-P2d）**：请求超时 / 上游响应大小上限 / stdio args 校验 / 故障注入 e2e | ✅ | 集成测试 + CI 全绿 |
+| **安全堵漏（R11）**：HTTP 流式读防 OOM / stdio 行长上限 / 配置引用完整性校验 | ✅ | 单测 + CI 全绿 |
 
 ### 验证策略（已确立）
 - **全部经 GitHub Actions workflow 验证**，CI 绿为准。
@@ -37,8 +39,8 @@
 - 三类检查：`test`(fmt + clippy -D warnings + 单测 + http e2e) ｜ `e2e-stdio`(跨进程)。
 
 ### 里程碑进度（详见 DESIGN §5）
-- ✅ Stage 0 脚手架 ｜ ✅ Stage 1 stdio 端到端 ｜ ✅ Stage 3 HTTP 传输 ｜ ✅ 安全加固（ADR-008） ｜ ✅ 健壮性首批（ADR-009）
-- ⬜ Stage 2 流式（**下一步**）｜ ⬜ Stage 4 路由增强 ｜ ⬜ Stage 5 嵌入 Core ｜ ⬜ Stage 6 硬化（深化批）
+- ✅ Stage 0 脚手架 ｜ ✅ Stage 1 stdio 端到端 ｜ ✅ Stage 3 HTTP 传输 ｜ ✅ 安全加固（ADR-008）｜ ✅ 健壮性首批（ADR-009）｜ ✅ Stage 6 深化批（P2a-P2d）｜ ✅ 安全堵漏（R11）
+- ⬜ Stage 2 流式（**下一步**）｜ ⬜ Stage 4 路由增强 ｜ ⬜ Stage 5 嵌入 Core ｜ ⬜ Stage 6 硬化（深化续：重连/健康检查/可观测性）
 
 ---
 
@@ -87,13 +89,13 @@ cargo +stable-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings
 - 内容：SSRF 阵御 / 请求体上限 / 错误脱敏 / 优雅关机 / stdio 规范关机序列 + EOF drain / notification broadcast / 协议版本协商校验 / UpstreamPool 构建回滚（详见 DESIGN ADR-009）+ P2a-P2d 深化（超时/响应上限/args校验/故障注入）。
 - 验收：CI 全绿（fmt + clippy -D warnings + test + e2e-stdio）。✅ 已达成。
 
-**安全堵漏（R11 高优先项，当前 PR 续）**
-- **R11.1 · HTTP 响应流式读 + 先检 Content-Length**：`HttpTransport::request` 当前 `resp.text()` 全量读再检查大小 → 恶意上游可 OOM。修复：先检查 `Content-Length` 头，再用 `resp.chunk()` 流式读取累加计数，超限即断。
-- **R11.7 · stdio 行长度上限**：`BufReader::lines()` 无行长限制 → 恶意上游发超长行可 OOM。修复：设 `max_line_bytes`（默认 1 MiB），超限断开子进程。
-- **R11.3 · Io/Json 错误脱敏完善**：`GatewayError::Io/Json` 的 `into_response` 泄漏内部路径/解析细节。修复：非 `is_client_safe()` 变体返回泛化消息，完整信息落 tracing。
-- **R11.5 · 配置校验：路由引用上游存在性**：`validate()` 不校验路由 `upstream` 是否在 `upstreams` 中。修复：加引用完整性检查。
-- **R11.8 · 删除/使用 http.rs 未用超时常量**：`CONNECT_TIMEOUT`/`REQUEST_TIMEOUT` 定义了但未在 reqwest Client 设置。
-- 验收：CI 全绿；新增单测覆盖流式读超限、行长超限、Io/Json 脱敏、配置引用校验。
+**安全堵漏（R11 高优先项，当前 PR 续）** ✅ 已落地
+- **R11.1 · HTTP 响应流式读 + 先检 Content-Length** ✅：改为 `bytes_stream()` 逐 chunk 累加 + `Content-Length` 头先检，恶意上游无法 OOM Gateway。
+- **R11.7 · stdio 行长度上限** ✅：逐字节读 + `MAX_LINE_BYTES=1MiB`，超限断开子进程并 drain pending。
+- **R11.3 · Io/Json 错误脱敏完善** ✅：审读确认 `is_client_safe()` 已正确排除 `Io`/`Json`，`into_response` 对非 safe 变体返回泛化消息。
+- **R11.5 · 配置校验：路由引用上游存在性** ✅：`validate()` 加 `upstream_names` HashSet 引用完整性检查 + 单测 `route_referencing_unknown_upstream_is_rejected`。
+- **R11.8 · http.rs 超时常量** ✅：审读确认 `CONNECT_TIMEOUT`/`REQUEST_TIMEOUT` 已在 `with_max_response()` 中使用。
+- 验收：CI 全绿 ✅（fmt + clippy -D warnings + test + e2e-stdio）。
 
 ### P1 · 近期
 
@@ -175,7 +177,7 @@ cargo +stable-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings
 
 | 版本 | 内容 | 状态 |
 |------|------|------|
-| 0.1.x | 核心桥 + stdio/HTTP 传输 + 鉴权/限流/路由 + 安全(ADR-008) + 健壮性首批(ADR-009) + 自给自足 CI | 当前 |
+| 0.1.x | 核心桥 + stdio/HTTP 传输 + 鉴权/限流/路由 + 安全(ADR-008+009) + 健壮性首批 + P2a-P2d 深化 + R11 安全堵漏 + 自给自足 CI | 当前 |
 | 0.2.0 | Stage 2 流式 | 计划（P1） |
 | 0.3.0 | Stage 6 深化（超时/重连/健康检查/响应上限/args校验）+ 故障注入 e2e | 计划（P2） |
 | 0.4.0 | Stage 4 路由/兼容增强 + 可观测性 | 计划（P3） |

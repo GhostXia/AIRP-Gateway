@@ -223,9 +223,17 @@ src/
 - 目标：Core 加 `airp-gateway` 依赖，替换其 daemon 的转发部分。
 - 退出标准：[ ] Core 内 `Gateway::build().run()` 跑通 [ ] 构建策略（target 目录）在 Core 侧解决
 
-### Stage 6 · 硬化 ⬜
+### Stage 6 · 硬化 🔵进行中
 - 目标：生产可用。
-- 退出标准：[ ] 请求超时 + 取消通知 [ ] 上游重连/健康检查 [ ] 指标/追踪 [ ] 限流键可选（IP/token）
+- 已完成：
+  - [x] 请求超时 + 504 返回（P2a）
+  - [x] 上游响应大小上限 + 502 返回（P2b）
+  - [x] stdio args 校验 + allow_arbitrary_args opt-in（P2c）
+  - [x] 故障注入 e2e 测试（P2d）
+  - [x] HTTP 响应流式读防 OOM + Content-Length 先检（R11.1）
+  - [x] stdio 行长上限防 OOM（R11.7）
+  - [x] 配置校验：路由引用上游存在性（R11.5）
+- 退出标准（续）：[ ] 上游重连/健康检查 [ ] 指标/追踪 [ ] 限流键可选（IP/token）[ ] 超时后 pending 清理（R11.2）
 
 ---
 
@@ -354,17 +362,18 @@ src/
 - ✅ ~~HTTP upstream SSRF 防护~~ → ADR-009 已落地。
 - ✅ ~~请求体大小上限~~ → ADR-009 已落地。
 - ✅ ~~stdio args 校验~~ → P2c 已落地。
-- ✅ ~~上游响应大小上限~~ → P2b 已落地（⚠️ 但当前先全量读再检查，见 R11.1）。
+- ✅ ~~上游响应大小上限~~ → P2b 已落地。
+- ✅ ~~HTTP 响应先全量读再检查大小~~（R11.1）→ 已修复：改为 `bytes_stream()` 逐 chunk 累加 + `Content-Length` 头先检。
+- ✅ ~~stdio reader 无限行长~~（R11.7）→ 已修复：逐字节读 + `MAX_LINE_BYTES=1MiB` 上限，超限断开子进程。
+- ✅ ~~Io/Json 错误脱敏不完整~~（R11.3）→ 审读确认 `is_client_safe()` 已正确排除 `Io`/`Json`，`into_response` 对非 safe 变体返回泛化消息。
+- ✅ ~~配置校验不校验路由引用上游存在性~~（R11.5）→ 已修复：`validate()` 加 `upstream_names` HashSet 引用完整性检查 + 单测。
+- ✅ ~~HttpTransport 超时常量未使用~~（R11.8）→ 审读确认 `CONNECT_TIMEOUT`/`REQUEST_TIMEOUT` 已在 `with_max_response()` 中设置于 `reqwest::Client`。
 - ✅ ~~请求超时~~ → P2a 已落地。
 - ✅ ~~stdio 规范关机序列~~ → ADR-009 已落地。
 - ✅ ~~协议版本协商校验~~ → ADR-009 已落地。
-- ⚠️ **HTTP 响应先全量读再检查大小**（R11.1）：`resp.text()` 把整个 body 读进内存后才检查 `len > max_response_bytes`，恶意上游可 OOM Gateway。
-- ⚠️ **stdio reader 无限行长**（R11.7）：`BufReader::lines()` 无行长上限，恶意上游发超长行可 OOM。
-- ⚠️ **Io/Json 错误脱敏不完整**（R11.3）：`into_response` 对 `GatewayError::Io/Json` 返回完整 Display 信息，泄漏内部路径/解析细节。
-- ⚠️ **超时后 pending oneshot 泄漏**（R11.2）：`send_with_timeout` 超时 drop future，但 transport pending 表中该 id 未移除。
-- ⚠️ **配置校验不校验路由引用上游存在性**（R11.5）：运行时才返回 `UnknownUpstream`。
+- ⚠️ **超时后 pending oneshot 泄漏**（R11.2）：`send_with_timeout` 超时 drop future，但 `StdioTransport::pending` HashMap 中该 id 的 oneshot sender 仍在。后续子进程回带该 id 响应时 send 到已关闭 oneshot（无害），但 pending 表条目永不移除 → 内存缓慢泄漏。修复方案：超时后主动从 pending 移除，或给 `McpTransport::request` 加 `CancellationToken`。
 - ⚠️ 无上游重连、无健康检查（Stage 6 续）。
-- ⚠️ `HttpTransport` 的 `CONNECT_TIMEOUT`/`REQUEST_TIMEOUT` 常量未使用（R11.8）。
+- ⚠️ CI 缺 `cargo audit` / MSRV / `Cargo.lock` + `--locked`（R11.6）。
 
 ---
 
@@ -405,3 +414,4 @@ src/
 - **2026-06-29** Stage 6 深化批（P2a-P2d）：请求超时（`McpClient::send_with_timeout` + `upstream_timeout_secs` 配置，超时返回 504 Gateway Timeout）；上游响应大小上限（`max_response_bytes` + `HttpTransport::with_max_response`，超限返回 502）；stdio args 校验（`allow_arbitrary_args` opt-in，`allowed_commands` 非空时默认拒绝带 args 的 stdio 上游）；故障注入 e2e 测试（`ErrorTransport` / `HangingTransport` / `CrashAfterInitTransport`，覆盖上游错误/崩溃/超时场景）。新增 `GatewayError::UpstreamTimeout` / `GatewayError::ResponseTooLarge`。config 单测覆盖 args 校验 + 默认值。README 配置表同步。
 - **2026-06-29** CI 修复：clippy `match_result_ok` + `for_kv_map`；`oversized_request_body` 测试 limit 值修正（body 7B vs limit 8B → 4B）。CI 全绿。
 - **2026-06-29** R11 源码审读：发现 10 项 ROADMAP 之外的代码级改进点（HTTP 响应 OOM 风险 / stdio 行长 OOM / Io/Json 脱敏不完整 / pending 泄漏 / 配置校验缺引用完整性 / CI 缺 audit / 超时常量未用 / reqwest stream feature / Cargo.lock）。写入 ROADMAP P0-P2 展开项。§4.3 / §8 同步更新。
+- **2026-06-29** R11 代码落地：R11.1（HTTP 响应流式读 `bytes_stream()` + Content-Length 先检，防 OOM）；R11.7（stdio 行长上限 `MAX_LINE_BYTES=1MiB`，超限断开子进程）；R11.3（审读确认 Io/Json 脱敏已正确实现）；R11.5（`validate()` 加路由引用上游存在性校验 + 单测）；R11.8（审读确认超时常量已使用）。CI 全绿。§8 / ROADMAP P0 标记完成。
