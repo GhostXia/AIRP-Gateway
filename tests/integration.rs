@@ -400,7 +400,7 @@ async fn oversized_request_body_is_rejected() {
     let bridge = Bridge::new(pool.clone(), routes.clone());
 
     let config = GatewayConfig {
-        max_request_bytes: 8, // 8 bytes — any JSON body exceeds this
+        max_request_bytes: 4, // 4 bytes — any JSON body exceeds this
         rate_limit: airp_gateway::config::RateLimitConfig {
             enabled: false,
             ..Default::default()
