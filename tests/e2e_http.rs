@@ -87,6 +87,9 @@ async fn tool_roundtrip_via_http() {
             enabled: false,
             ..Default::default()
         },
+        // The upstream is an in-process mock on 127.0.0.1 — opt out of SSRF
+        // defense for this test (it would otherwise reject the loopback URL).
+        block_private_upstream_urls: false,
         upstreams: vec![UpstreamConfig {
             name: "http".into(),
             transport: TransportConfig::Http {

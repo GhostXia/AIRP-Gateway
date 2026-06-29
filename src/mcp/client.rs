@@ -3,6 +3,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use tokio::sync::OnceCell;
@@ -11,7 +12,7 @@ use crate::error::{GatewayError, Result};
 use crate::mcp::transport::McpTransport;
 use crate::mcp::types::{
     resource_read_params, tool_call_params, JsonRpcNotification, JsonRpcRequest,
-    MCP_PROTOCOL_VERSION,
+    MCP_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS,
 };
 
 pub struct McpClient {
@@ -21,6 +22,8 @@ pub struct McpClient {
     /// `initialize` is run once, lazily, on first use. Holds the *negotiated*
     /// protocol version the server replied with.
     negotiated: OnceCell<String>,
+    /// Per-request timeout for upstream calls. `None` = no timeout (not recommended).
+    request_timeout: Option<Duration>,
 }
 
 impl McpClient {
@@ -30,7 +33,15 @@ impl McpClient {
             transport,
             next_id: AtomicU64::new(1),
             negotiated: OnceCell::new(),
+            request_timeout: None,
         }
+    }
+
+    /// Configure the per-request upstream timeout. Applied to every `invoke`
+    /// and the `initialize` handshake.
+    pub fn with_request_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.request_timeout = timeout;
+        self
     }
 
     fn next_id(&self) -> Value {
@@ -47,7 +58,9 @@ impl McpClient {
                     "clientInfo": { "name": "airp-gateway", "version": env!("CARGO_PKG_VERSION") }
                 });
                 let req = JsonRpcRequest::new(self.next_id(), "initialize", Some(params));
-                let resp = self.transport.request(req).await?;
+                let resp = self
+                    .send_with_timeout(|transport| async move { transport.request(req).await })
+                    .await?;
                 if let Some(err) = resp.error {
                     return Err(GatewayError::Upstream {
                         code: err.code,
@@ -65,7 +78,21 @@ impl McpClient {
                     .and_then(|v| v.as_str())
                     .unwrap_or(MCP_PROTOCOL_VERSION)
                     .to_string();
+                // Reject versions we don't support. spec: if the client cannot
+                // support the server's version it MUST disconnect.
+                if !SUPPORTED_PROTOCOL_VERSIONS.contains(&version.as_str()) {
+                    return Err(GatewayError::Upstream {
+                        code: -32602,
+                        message: format!(
+                            "server negotiated unsupported protocolVersion `{version}` \
+                             (supported: {})",
+                            SUPPORTED_PROTOCOL_VERSIONS.join(", ")
+                        ),
+                    });
+                }
                 // Per spec, follow up with the `initialized` notification.
+                // Notifications carry no response, so they are not subject to the
+                // request timeout (the handshake itself already bounded it).
                 let note = JsonRpcNotification::new("notifications/initialized", None);
                 self.transport.notify(note).await?;
                 Ok(version)
@@ -79,6 +106,13 @@ impl McpClient {
     /// for the HTTP `MCP-Protocol-Version` header.
     pub fn protocol_version(&self) -> Option<String> {
         self.negotiated.get().cloned()
+    }
+
+    /// Gracefully shut down the underlying transport (e.g. close stdin, wait
+    /// for the child to exit). Safe to call multiple times.
+    pub async fn shutdown_transport(&self) -> crate::error::Result<()> {
+        self.transport.shutdown().await;
+        Ok(())
     }
 
     /// Call an MCP tool, returning its `result` payload.
@@ -103,7 +137,9 @@ impl McpClient {
 
     async fn invoke(&self, method: &str, params: Value) -> Result<Value> {
         let req = JsonRpcRequest::new(self.next_id(), method, Some(params));
-        let resp = self.transport.request(req).await?;
+        let resp = self
+            .send_with_timeout(|transport| async move { transport.request(req).await })
+            .await?;
         if let Some(err) = resp.error {
             return Err(GatewayError::Upstream {
                 code: err.code,
@@ -111,5 +147,21 @@ impl McpClient {
             });
         }
         Ok(resp.result.unwrap_or(Value::Null))
+    }
+
+    /// Run a transport call under the configured per-request timeout. When
+    /// `request_timeout` is `None` or `Duration::ZERO`, no timeout is applied.
+    async fn send_with_timeout<F, Fut>(&self, f: F) -> Result<crate::mcp::types::JsonRpcResponse>
+    where
+        F: FnOnce(Arc<dyn McpTransport>) -> Fut,
+        Fut: std::future::Future<Output = Result<crate::mcp::types::JsonRpcResponse>> + Send,
+    {
+        let fut = f(self.transport.clone());
+        match self.request_timeout {
+            Some(t) if !t.is_zero() => tokio::time::timeout(t, fut)
+                .await
+                .map_err(|_| GatewayError::UpstreamTimeout(t))?,
+            _ => fut.await,
+        }
     }
 }

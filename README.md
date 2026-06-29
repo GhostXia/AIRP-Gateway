@@ -145,8 +145,13 @@ target = { kind = "tool", name = "your_tool_name" }
 | `upstreams[]` | 上游 MCP 服务：`name` + `transport`(`stdio`\|`http`) |
 | `routes[]` | `path` + `method` + `upstream` + `target`(`tool`\|`resource`) |
 | `allowed_commands` | stdio 命令白名单（**空=放行**；非空时 stdio `command` 须按全串/文件名匹配，否则启动失败） |
+| `max_request_bytes` | 前端请求体大小上限（字节），默认 1 MiB |
+| `max_response_bytes` | 上游响应体大小上限（字节），默认 10 MiB |
+| `upstream_timeout_secs` | 上游请求超时（秒），默认 30；设 0 禁用 |
+| `block_private_upstream_urls` | SSRF 防护：拒绝 HTTP 上游指向内网/loopback，默认 true |
+| `allow_arbitrary_args` | 当 `allowed_commands` 非空时，允许 stdio 上游带 `args`，默认 false |
 
-环境变量覆盖（最高优先）：`AIRP_GW_BIND`、`AIRP_GW_ACCESS_KEY`。
+环境变量覆盖（最高优先）：`AIRP_GW_BIND`、`AIRP_GW_ACCESS_KEY`、`AIRP_GW_MAX_REQUEST_BYTES`、`AIRP_GW_MAX_RESPONSE_BYTES`、`AIRP_GW_UPSTREAM_TIMEOUT_SECS`。
 
 中间件顺序：**CORS → 限流 → 鉴权 → 分发**。
 

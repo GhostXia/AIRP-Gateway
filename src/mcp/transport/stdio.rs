@@ -3,27 +3,41 @@
 //! Launches the MCP server as a child process and exchanges newline-delimited
 //! JSON-RPC messages over its stdin/stdout. A background reader task matches
 //! responses to in-flight requests by `id`.
+//!
+//! ## Robustness
+//! - When the child exits (EOF on stdout), the reader task drains all pending
+//!   oneshot senders with an error so callers don't hang forever.
+//! - A graceful shutdown sequence is provided: close stdin → wait for exit →
+//!   kill on timeout. `Drop` performs a best-effort kill.
 
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{broadcast, Mutex};
 
 use crate::error::{GatewayError, Result};
 use crate::mcp::transport::McpTransport;
 use crate::mcp::types::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 
-type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<JsonRpcResponse>>>>;
+type Pending = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>;
+
+/// How long to wait for the child to exit after closing stdin before killing it.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct StdioTransport {
-    stdin: Mutex<ChildStdin>,
+    stdin: Mutex<Option<ChildStdin>>,
     pending: Pending,
+    /// Broadcast channel for server-initiated notifications (no `id`).
+    /// Receivers can subscribe via [`Self::subscribe_notifications`].
+    /// Capacity is bounded; slow consumers drop oldest messages.
+    notification_tx: broadcast::Sender<JsonRpcNotification>,
     // Keep the child alive for the lifetime of the transport.
-    _child: Child,
+    child: Mutex<Child>,
 }
 
 impl StdioTransport {
@@ -51,35 +65,114 @@ impl StdioTransport {
             .ok_or_else(|| GatewayError::Transport("child stdout unavailable".into()))?;
 
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+        let (notification_tx, _) = broadcast::channel(64);
 
         // Reader task: route each response line to its waiting caller.
+        // On EOF / error, drain all pending senders with an error so
+        // callers don't hang forever.
         let pending_reader = pending.clone();
+        let notification_tx_r = notification_tx.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(&line) {
-                    let key = id_key(&resp.id);
-                    if let Some(tx) = pending_reader.lock().await.remove(&key) {
-                        let _ = tx.send(resp);
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(line)) => {
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        // Try to parse as a response (has `id`).
+                        if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(&line) {
+                            let key = id_key(&resp.id);
+                            if let Some(tx) = pending_reader.lock().await.remove(&key) {
+                                let _ = tx.send(resp);
+                            }
+                            continue;
+                        }
+                        // Try to parse as a notification (no `id`).
+                        if let Ok(note) =
+                            serde_json::from_str::<JsonRpcNotification>(&line)
+                        {
+                            let _ = notification_tx_r.send(note);
+                            continue;
+                        }
+                        // Unparseable line — ignore.
+                    }
+                    Ok(None) => {
+                        // EOF: child stdout closed.
+                        break;
+                    }
+                    Err(_) => {
+                        // I/O error on stdout — treat as EOF.
+                        break;
                     }
                 }
-                // Lines that aren't responses (server-initiated notifications)
-                // are ignored for now. TODO: surface them for streaming.
+            }
+
+            // Drain all pending requests with an error so callers don't hang.
+            let remaining = {
+                let mut map = pending_reader.lock().await;
+                std::mem::take(&mut *map)
+            };
+            for (_, tx) in remaining {
+                // Construct a synthetic error response.
+                let err_resp = JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: serde_json::Value::Null,
+                    result: None,
+                    error: Some(crate::mcp::types::JsonRpcError {
+                        code: -32000,
+                        message: "upstream process exited".to_string(),
+                        data: None,
+                    }),
+                };
+                let _ = tx.send(err_resp);
             }
         });
 
         Ok(Self {
-            stdin: Mutex::new(stdin),
+            stdin: Mutex::new(Some(stdin)),
             pending,
-            _child: child,
+            notification_tx,
+            child: Mutex::new(child),
         })
     }
 
+    /// Subscribe to server-initiated notifications (e.g. `notifications/progress`).
+    /// Late subscribers only see notifications emitted after subscription.
+    pub fn subscribe_notifications(&self) -> broadcast::Receiver<JsonRpcNotification> {
+        self.notification_tx.subscribe()
+    }
+
+    /// Graceful shutdown: close stdin (signals the child to exit), wait up to
+    /// [`SHUTDOWN_TIMEOUT`], then kill if still alive.
+    pub async fn shutdown(&self) {
+        // Close stdin to signal the child.
+        {
+            let mut stdin_guard = self.stdin.lock().await;
+            let _ = stdin_guard.take();
+        }
+
+        // Wait for the child to exit, with a timeout.
+        let exited = {
+            let mut child = self.child.lock().await;
+            match tokio::time::timeout(SHUTDOWN_TIMEOUT, child.wait()).await {
+                Ok(Ok(_status)) => true,
+                Ok(Err(_)) => true, // error querying — assume gone
+                Err(_) => false,    // timed out
+            }
+        };
+
+        if !exited {
+            let mut child = self.child.lock().await;
+            let _ = child.start_kill();
+        }
+    }
+
     async fn write_line(&self, payload: &str) -> Result<()> {
-        let mut stdin = self.stdin.lock().await;
+        let mut stdin_guard = self.stdin.lock().await;
+        let stdin = stdin_guard
+            .as_mut()
+            .ok_or_else(|| GatewayError::Transport("upstream stdin already closed".into()))?;
         stdin
             .write_all(payload.as_bytes())
             .await
@@ -96,6 +189,18 @@ impl StdioTransport {
     }
 }
 
+impl Drop for StdioTransport {
+    fn drop(&mut self) {
+        // Best-effort kill on drop. We can't do async here, so just start_kill.
+        // The child's stdin was already taken or will be dropped here.
+        let mut child = match self.child.try_lock() {
+            Ok(c) => c,
+            Err(_) => return, // someone else holds the lock — best effort
+        };
+        let _ = child.start_kill();
+    }
+}
+
 fn id_key(id: &serde_json::Value) -> String {
     match id {
         serde_json::Value::String(s) => s.clone(),
@@ -107,7 +212,7 @@ fn id_key(id: &serde_json::Value) -> String {
 impl McpTransport for StdioTransport {
     async fn request(&self, req: JsonRpcRequest) -> Result<JsonRpcResponse> {
         let key = id_key(&req.id);
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending.lock().await.insert(key.clone(), tx);
 
         let line = serde_json::to_string(&req)?;
@@ -123,5 +228,9 @@ impl McpTransport for StdioTransport {
     async fn notify(&self, note: JsonRpcNotification) -> Result<()> {
         let line = serde_json::to_string(&note)?;
         self.write_line(&line).await
+    }
+
+    async fn shutdown(&self) {
+        StdioTransport::shutdown(self).await;
     }
 }
