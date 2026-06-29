@@ -69,7 +69,7 @@ impl UpstreamPool {
     /// Gracefully shut down every upstream transport in the pool.
     /// Best-effort: errors are logged and ignored so all upstreams get a chance.
     pub async fn shutdown_all(&self) -> GwResult<()> {
-        for (_, client) in &self.clients {
+        for client in self.clients.values() {
             if let Err(e) = client.shutdown_transport().await {
                 tracing::warn!(error = %e, "upstream shutdown error");
             }

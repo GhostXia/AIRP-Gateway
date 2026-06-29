@@ -291,7 +291,7 @@ fn url_is_private_or_loopback(url: &str) -> Option<&'static str> {
     let parsed = url::Url::parse(url).ok()?;
     let host = parsed.host_str()?;
     // Literal IP check (covers `http://127.0.0.1`, `http://[::1]`, etc.).
-    if let Some(ip) = host.parse::<std::net::IpAddr>().ok() {
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
         if ip.is_loopback() {
             return Some("loopback address");
         }
