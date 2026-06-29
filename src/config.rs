@@ -302,7 +302,7 @@ fn url_is_private_or_loopback(url: &str) -> Option<&'static str> {
             std::net::IpAddr::V4(v4) if v4.is_link_local() => {
                 return Some("link-local address");
             }
-            std::net::IpAddr::V6(v6) if v6.is_link_local() => {
+            std::net::IpAddr::V6(v6) if v6.is_unicast_link_local() => {
                 return Some("link-local address");
             }
             _ => {}
