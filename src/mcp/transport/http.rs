@@ -114,15 +114,37 @@ impl McpTransport for HttpTransport {
             .map(|c| c.contains("text/event-stream"))
             .unwrap_or(false);
 
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| GatewayError::Transport(format!("read upstream body: {e}")))?;
-
-        // Response size limit: reject bodies exceeding the configured cap.
-        if text.len() > self.max_response_bytes {
-            return Err(GatewayError::ResponseTooLarge(self.max_response_bytes));
+        // Pre-check Content-Length header to reject oversized responses before
+        // allocating memory. This is a fast path; the actual body size is
+        // verified after streaming read below.
+        if let Some(cl) = resp
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            if cl > self.max_response_bytes {
+                return Err(GatewayError::ResponseTooLarge(self.max_response_bytes));
+            }
         }
+
+        // Stream the body chunk-by-chunk, accumulating with a size cap.
+        // This avoids loading an unbounded response into memory.
+        let mut body_bytes = Vec::new();
+        let mut total: usize = 0;
+        let mut stream = resp.bytes_stream();
+        use futures_util::StreamExt;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk
+                .map_err(|e| GatewayError::Transport(format!("read upstream body: {e}")))?;
+            total += chunk.len();
+            if total > self.max_response_bytes {
+                return Err(GatewayError::ResponseTooLarge(self.max_response_bytes));
+            }
+            body_bytes.extend_from_slice(&chunk);
+        }
+        let text = String::from_utf8(body_bytes)
+            .map_err(|e| GatewayError::Transport(format!("non-utf8 upstream body: {e}")))?;
 
         let parsed = if is_sse {
             parse_sse(&text)?

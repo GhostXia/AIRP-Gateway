@@ -81,11 +81,19 @@ cargo +stable-x86_64-pc-windows-gnu clippy --all-targets -- -D warnings
 > 每项：目标 / 价值 / 验收（均要求 workflow 验证、自给自足）。
 > 优先级标记：P0（立即）→ P1（近期）→ P2（中近期）→ P3（中期）→ P5（远期）。
 
-### P0 · 当前分支落地（前提）
+### P0 · 当前分支落地 + 安全堵漏
 
 **提交 ADR-009 健壮性首批改动 → CI 验证 → 合 main**
-- 内容：SSRF 阵御 / 请求体上限 / 错误脱敏 / 优雅关机 / stdio 规范关机序列 + EOF drain / notification broadcast / 协议版本协商校验 / UpstreamPool 构建回滚（详见 DESIGN ADR-009）。
-- 验收：CI 全绿（fmt + clippy -D warnings + test + e2e-stdio）。
+- 内容：SSRF 阵御 / 请求体上限 / 错误脱敏 / 优雅关机 / stdio 规范关机序列 + EOF drain / notification broadcast / 协议版本协商校验 / UpstreamPool 构建回滚（详见 DESIGN ADR-009）+ P2a-P2d 深化（超时/响应上限/args校验/故障注入）。
+- 验收：CI 全绿（fmt + clippy -D warnings + test + e2e-stdio）。✅ 已达成。
+
+**安全堵漏（R11 高优先项，当前 PR 续）**
+- **R11.1 · HTTP 响应流式读 + 先检 Content-Length**：`HttpTransport::request` 当前 `resp.text()` 全量读再检查大小 → 恶意上游可 OOM。修复：先检查 `Content-Length` 头，再用 `resp.chunk()` 流式读取累加计数，超限即断。
+- **R11.7 · stdio 行长度上限**：`BufReader::lines()` 无行长限制 → 恶意上游发超长行可 OOM。修复：设 `max_line_bytes`（默认 1 MiB），超限断开子进程。
+- **R11.3 · Io/Json 错误脱敏完善**：`GatewayError::Io/Json` 的 `into_response` 泄漏内部路径/解析细节。修复：非 `is_client_safe()` 变体返回泛化消息，完整信息落 tracing。
+- **R11.5 · 配置校验：路由引用上游存在性**：`validate()` 不校验路由 `upstream` 是否在 `upstreams` 中。修复：加引用完整性检查。
+- **R11.8 · 删除/使用 http.rs 未用超时常量**：`CONNECT_TIMEOUT`/`REQUEST_TIMEOUT` 定义了但未在 reqwest Client 设置。
+- 验收：CI 全绿；新增单测覆盖流式读超限、行长超限、Io/Json 脱敏、配置引用校验。
 
 ### P1 · 近期
 

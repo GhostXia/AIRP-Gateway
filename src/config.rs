@@ -243,6 +243,18 @@ impl GatewayConfig {
             }
         }
 
+        // Route integrity: every route's upstream must exist in the upstreams list.
+        let upstream_names: std::collections::HashSet<&str> =
+            self.upstreams.iter().map(|u| u.name.as_str()).collect();
+        for route in &self.routes {
+            if !upstream_names.contains(route.upstream.as_str()) {
+                return Err(GatewayError::Config(format!(
+                    "route `{}` (path `{}`) references unknown upstream `{}`",
+                    route.path, route.method, route.upstream
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -537,5 +549,33 @@ mod tests {
         assert_eq!(cfg.max_response_bytes, 10 * 1024 * 1024);
         assert!(cfg.block_private_upstream_urls);
         assert!(!cfg.allow_arbitrary_args);
+    }
+
+    #[test]
+    fn route_referencing_unknown_upstream_is_rejected() {
+        let cfg = GatewayConfig {
+            upstreams: vec![UpstreamConfig {
+                name: "real".to_string(),
+                transport: TransportConfig::Http {
+                    url: "https://example.com/mcp".to_string(),
+                    auth_token: None,
+                },
+            }],
+            routes: vec![RouteRule {
+                path: "/v1/test".to_string(),
+                method: "POST".to_string(),
+                upstream: "phantom".to_string(),
+                target: RouteTarget::Tool {
+                    name: "echo".to_string(),
+                    stream: false,
+                },
+            }],
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("phantom"),
+            "error should mention the unknown upstream name: {err}"
+        );
     }
 }

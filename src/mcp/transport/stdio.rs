@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{broadcast, Mutex};
 
@@ -28,6 +28,9 @@ type Pending = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<JsonRpcRes
 
 /// How long to wait for the child to exit after closing stdin before killing it.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+/// Maximum line length from child stdout. Lines exceeding this are treated as
+/// an error (prevents a malicious/buggy upstream from OOM'ing the gateway).
+const MAX_LINE_BYTES: usize = 1024 * 1024; // 1 MiB
 
 pub struct StdioTransport {
     stdin: Mutex<Option<ChildStdin>>,
@@ -73,36 +76,95 @@ impl StdioTransport {
         let pending_reader = pending.clone();
         let notification_tx_r = notification_tx.clone();
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
+            let mut reader = BufReader::new(stdout);
+            let mut line = Vec::with_capacity(4096);
             loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) => {
-                        if line.trim().is_empty() {
-                            continue;
-                        }
-                        // Try to parse as a response (has `id`).
-                        if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(&line) {
-                            let key = id_key(&resp.id);
-                            if let Some(tx) = pending_reader.lock().await.remove(&key) {
-                                let _ = tx.send(resp);
+                // Read one byte at a time to enforce line length limit.
+                // This is acceptable for MCP NDJSON frames which are typically
+                // small; the real throughput bottleneck is the child process.
+                let mut buf = [0u8; 1];
+                match reader.read(&mut buf).await {
+                    Ok(0) => break, // EOF
+                    Ok(_) => {
+                        if buf[0] == b'\n' {
+                            if line.len() > MAX_LINE_BYTES {
+                                tracing::warn!(
+                                    "stdio line exceeded {} bytes, killing upstream",
+                                    MAX_LINE_BYTES
+                                );
+                                // Drain pending with error; the child will be
+                                // killed by Drop or shutdown().
+                                let remaining = {
+                                    let mut map = pending_reader.lock().await;
+                                    std::mem::take(&mut *map)
+                                };
+                                for (_, tx) in remaining {
+                                    let err_resp = JsonRpcResponse {
+                                        jsonrpc: "2.0".to_string(),
+                                        id: serde_json::Value::Null,
+                                        result: None,
+                                        error: Some(crate::mcp::types::JsonRpcError {
+                                            code: -32000,
+                                            message: "upstream line too large".to_string(),
+                                            data: None,
+                                        }),
+                                    };
+                                    let _ = tx.send(err_resp);
+                                }
+                                break;
                             }
-                            continue;
+                            let line_str = String::from_utf8_lossy(&line);
+                            if !line_str.trim().is_empty() {
+                                // Try to parse as a response (has `id`).
+                                if let Ok(resp) =
+                                    serde_json::from_str::<JsonRpcResponse>(&line_str)
+                                {
+                                    let key = id_key(&resp.id);
+                                    if let Some(tx) =
+                                        pending_reader.lock().await.remove(&key)
+                                    {
+                                        let _ = tx.send(resp);
+                                    }
+                                }
+                                // Try to parse as a notification (no `id`).
+                                else if let Ok(note) =
+                                    serde_json::from_str::<JsonRpcNotification>(&line_str)
+                                {
+                                    let _ = notification_tx_r.send(note);
+                                }
+                                // Unparseable line — ignore.
+                            }
+                            line.clear();
+                        } else {
+                            if line.len() > MAX_LINE_BYTES {
+                                // Already over limit before seeing newline.
+                                tracing::warn!(
+                                    "stdio line exceeded {} bytes (no newline yet), killing upstream",
+                                    MAX_LINE_BYTES
+                                );
+                                let remaining = {
+                                    let mut map = pending_reader.lock().await;
+                                    std::mem::take(&mut *map)
+                                };
+                                for (_, tx) in remaining {
+                                    let err_resp = JsonRpcResponse {
+                                        jsonrpc: "2.0".to_string(),
+                                        id: serde_json::Value::Null,
+                                        result: None,
+                                        error: Some(crate::mcp::types::JsonRpcError {
+                                            code: -32000,
+                                            message: "upstream line too large".to_string(),
+                                            data: None,
+                                        }),
+                                    };
+                                    let _ = tx.send(err_resp);
+                                }
+                                break;
+                            }
+                            line.push(buf[0]);
                         }
-                        // Try to parse as a notification (no `id`).
-                        if let Ok(note) = serde_json::from_str::<JsonRpcNotification>(&line) {
-                            let _ = notification_tx_r.send(note);
-                            continue;
-                        }
-                        // Unparseable line — ignore.
                     }
-                    Ok(None) => {
-                        // EOF: child stdout closed.
-                        break;
-                    }
-                    Err(_) => {
-                        // I/O error on stdout — treat as EOF.
-                        break;
-                    }
+                    Err(_) => break, // I/O error — treat as EOF.
                 }
             }
 
