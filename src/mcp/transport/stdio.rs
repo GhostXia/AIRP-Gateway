@@ -116,13 +116,10 @@ impl StdioTransport {
                             let line_str = String::from_utf8_lossy(&line);
                             if !line_str.trim().is_empty() {
                                 // Try to parse as a response (has `id`).
-                                if let Ok(resp) =
-                                    serde_json::from_str::<JsonRpcResponse>(&line_str)
+                                if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(&line_str)
                                 {
                                     let key = id_key(&resp.id);
-                                    if let Some(tx) =
-                                        pending_reader.lock().await.remove(&key)
-                                    {
+                                    if let Some(tx) = pending_reader.lock().await.remove(&key) {
                                         let _ = tx.send(resp);
                                     }
                                 }

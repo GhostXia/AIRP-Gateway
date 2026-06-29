@@ -135,8 +135,8 @@ impl McpTransport for HttpTransport {
         let mut stream = resp.bytes_stream();
         use futures_util::StreamExt;
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk
-                .map_err(|e| GatewayError::Transport(format!("read upstream body: {e}")))?;
+            let chunk =
+                chunk.map_err(|e| GatewayError::Transport(format!("read upstream body: {e}")))?;
             total += chunk.len();
             if total > self.max_response_bytes {
                 return Err(GatewayError::ResponseTooLarge(self.max_response_bytes));
