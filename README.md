@@ -185,6 +185,7 @@ target = { kind = "tool", name = "your_tool_name" }
   → 上游 MCP 服务 → result → 回前端
 ```
 
+可定制点一站式清单（配置 / feature / 代码扩展点）见 [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md)。
 完整设计与开发追踪见 [`docs/DESIGN.md`](docs/DESIGN.md)；前瞻计划书（当前状态 + 路线图 + 版本规划）见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
 ---
