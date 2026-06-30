@@ -33,6 +33,12 @@ pub mod mcp;
 pub mod server;
 pub mod telemetry;
 
+// Optional State-Protocol AgentBus adapter frontend. Mounted by hosts that
+// want the `/airp/dispatch` + `/airp/stream` SSE surface (see
+// `examples/agentbus_sse.rs`). Pure adapter — depends only on the public
+// gateway core, does not modify `bridge` or `server`. Per ADR-007.
+pub mod agentbus;
+
 pub use config::{GatewayConfig, RouteRule, RouteTarget, TransportConfig, UpstreamConfig};
 pub use error::{GatewayError, Result};
 pub use server::{Gateway, GatewayState};
