@@ -3,7 +3,19 @@
 > Status: implemented (adapter module + example + integration tests)
 > Owner: AIRP-Gateway
 > Counterpart: AIRP-State-Protocol UI (`SSEBus`)
-> Related: ADR-007 (adapter layer is optional, not part of the core)
+> Related: ADR-007 (adapter layer is optional, not part of the core) · ADR-010 (gated behind a default-off `agentbus` feature)
+
+## Enabling
+
+This adapter is **off by default** — pure-bridge consumers compile none of it.
+Enable the cargo feature:
+
+```toml
+airp-gateway = { git = "https://github.com/GhostXia/AIRP-Gateway", features = ["agentbus"] }
+```
+
+`airp_gateway::agentbus` exists only with `--features agentbus`. The example and
+its integration test declare `required-features = ["agentbus"]`.
 
 ## What this is
 
