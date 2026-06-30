@@ -8,14 +8,15 @@
 //! depend only on [`airp_gateway::GatewayState`] (the shared bridge + pool) and
 //! the adapter's own [`super::bus::Bus`] + [`super::config::AdapterConfig`].
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use futures_util::stream::unfold;
+use futures_util::stream::{self, unfold, StreamExt};
 use serde_json::Value;
 
 use crate::bridge::DispatchOutcome;
@@ -24,6 +25,21 @@ use crate::server::GatewayState;
 use super::bus::Bus;
 use super::config::AdapterConfig;
 use super::envelope::*;
+
+/// Removes a connection's scope filter from the bus when its SSE stream is
+/// dropped (client disconnect *or* channel close), so the subscription map does
+/// not leak entries for connections that have gone away.
+struct ConnGuard {
+    bus: Bus,
+    conn_id: String,
+}
+
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        self.bus.disconnect(&self.conn_id);
+        tracing::info!(conn_id = %self.conn_id, "SSE stream closed");
+    }
+}
 
 /// Shared state injected into every handler via axum's `State`.
 //
@@ -59,11 +75,12 @@ pub async fn dispatch(
         }
     };
 
-    // Extract the SSE connection id from a header.
-    let conn_id: Option<u64> = headers
+    // Extract the SSE connection id from a header (echoed by the UI from the
+    // `?conn=` it opened the stream with, or from the `airp-ready` event).
+    let conn_id: Option<String> = headers
         .get("x-airp-conn")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok());
+        .map(|v| v.to_string());
 
     // Capture the envelope id before `body` is moved, so we can correlate
     // the downstream reply with the upstream request.
@@ -101,8 +118,8 @@ pub async fn dispatch(
 
         Body::Subscribe { scopes } => {
             if let Some(cid) = conn_id {
-                state.bus.set_scopes(cid, scopes.clone()).await;
-                tracing::debug!(conn_id = cid, ?scopes, "subscribed");
+                state.bus.set_scopes(&cid, scopes.clone());
+                tracing::debug!(conn_id = %cid, ?scopes, "subscribed");
             } else {
                 tracing::warn!("subscribe intent without x-airp-conn header; ignored");
             }
@@ -262,65 +279,73 @@ async fn send_initial_state(state: &Arc<AdapterState>) {
 
 /// Open an SSE stream for downstream envelopes.
 ///
-/// The stream stays open until the client disconnects or the server shuts
-/// down. Each `data:` line is a JSON `Envelope`. When the broadcast channel
-/// closes (or the SSE response is dropped), the connection is removed from
-/// the subscription map.
-pub async fn stream(State(state): State<Arc<AdapterState>>) -> Response {
-    let (conn_id, rx) = state.bus.subscribe();
-    tracing::info!(conn_id, "SSE stream opened");
+/// The stream stays open until the client disconnects or the server shuts down.
+/// Each `data:` line is a JSON `Envelope`. The connection id is taken from the
+/// `?conn=<id>` query (so a browser `EventSource`, which cannot set headers, can
+/// control it) or generated; it is sent back as the first SSE event
+/// `event: airp-ready` so a client that did not supply one can learn it and echo
+/// it on subsequent `POST /airp/dispatch` via the `x-airp-conn` header.
+///
+/// A [`ConnGuard`] threaded through the stream state removes the connection's
+/// scope filter on drop (client disconnect *or* channel close).
+pub async fn stream(
+    State(state): State<Arc<AdapterState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let (generated, rx) = state.bus.subscribe();
+    let conn_id = params.get("conn").cloned().unwrap_or(generated);
+    tracing::info!(conn_id = %conn_id, "SSE stream opened");
 
-    let bus = state.bus.clone();
-
-    // Poll the broadcast receiver with `unfold`. Each iteration yields one
-    // SSE event or skips (lagged) envelopes. On `Closed`, we disconnect this
-    // connection from the subscription map and end the stream.
-    let event_stream = unfold(rx, move |mut rx| {
-        let bus = bus.clone();
+    // First event tells the client its connection id (out-of-band; a named
+    // event, not an `Envelope`, so it does not pollute the envelope stream).
+    let ready = stream::once({
+        let conn_id = conn_id.clone();
         async move {
-            loop {
-                match rx.recv().await {
-                    Ok(envelope) => {
-                        // Determine scope of this envelope.
-                        let scope: Option<&str> = match &envelope.body {
-                            Body::State { scope, .. } => Some(scope),
-                            _ => None,
-                        };
+            Ok::<_, std::convert::Infallible>(Event::default().event("airp-ready").data(conn_id))
+        }
+    });
 
-                        // Check if this connection wants this scope.
-                        if !bus.wants_scope(conn_id, scope).await {
-                            continue;
-                        }
+    let guard = ConnGuard {
+        bus: state.bus.clone(),
+        conn_id,
+    };
 
-                        // Serialize envelope as SSE data line.
-                        match serde_json::to_string(&envelope) {
-                            Ok(json) => {
-                                let event = Event::default().data(json);
-                                return Some((Ok::<_, std::convert::Infallible>(event), rx));
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "failed to serialize envelope for SSE");
-                                continue;
-                            }
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(conn_id, lagged = n, "SSE consumer lagged; skipping");
+    // Poll the broadcast receiver. The guard rides in the unfold state so it is
+    // dropped (→ disconnect) when the stream ends for any reason.
+    let event_stream = unfold((rx, guard), move |(mut rx, guard)| async move {
+        loop {
+            match rx.recv().await {
+                Ok(envelope) => {
+                    let scope: Option<&str> = match &envelope.body {
+                        Body::State { scope, .. } => Some(scope),
+                        _ => None,
+                    };
+                    if !guard.bus.wants_scope(&guard.conn_id, scope) {
                         continue;
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        // Channel closed: remove this connection from the
-                        // subscription map and end the stream.
-                        bus.disconnect(conn_id).await;
-                        tracing::info!(conn_id, "SSE stream closed");
-                        return None;
+                    match serde_json::to_string(&envelope) {
+                        Ok(json) => {
+                            let event = Event::default().data(json);
+                            return Some((Ok::<_, std::convert::Infallible>(event), (rx, guard)));
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to serialize envelope for SSE");
+                            continue;
+                        }
                     }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(conn_id = %guard.conn_id, lagged = n, "SSE consumer lagged");
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    return None; // guard drops here → disconnect
                 }
             }
         }
     });
 
-    Sse::new(event_stream)
+    Sse::new(ready.chain(event_stream))
         .keep_alive(KeepAlive::default())
         .into_response()
 }

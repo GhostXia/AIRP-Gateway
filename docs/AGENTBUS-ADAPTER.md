@@ -30,13 +30,23 @@ once, holds it open, and receives every downstream envelope the gateway emits.
 
 ### Connection correlation
 
-The UI assigns itself a connection id when it opens `GET /airp/stream`. It
-echoes that id as the `x-airp-conn` header on every `POST /airp/dispatch`. The
-adapter uses this to attribute `subscribe` intents to the right SSE stream.
+The connection id is the join key between the (downstream) SSE stream and the
+(upstream) `POST /airp/dispatch` calls. Two ways to set it:
 
-(SSE has no client→server channel, so the connection id is the join key. If you
-later switch to WebSocket, the connection id becomes implicit and this header
-goes away.)
+- **Client-supplied** (recommended for browsers): open `GET /airp/stream?conn=<id>`
+  with your own id (a browser `EventSource` cannot set request headers, only the
+  URL). Echo the same id as the `x-airp-conn` header on every `POST /airp/dispatch`.
+- **Server-assigned**: if you omit `?conn=`, the gateway generates one and sends
+  it as the **first SSE event**, `event: airp-ready` with the id as its `data:`.
+  Read that, then echo it via `x-airp-conn` on subsequent dispatches.
+
+The adapter uses this id to attribute `subscribe` intents to the right SSE
+stream; a connection that never subscribes receives all scopes. When the stream
+drops (client disconnect or shutdown) the adapter clears that connection's scope
+filter automatically.
+
+(If you later switch to WebSocket, the connection id becomes implicit and both
+the `?conn=` query and the `x-airp-conn` header go away.)
 
 ## Mapping rules (the only designed part)
 

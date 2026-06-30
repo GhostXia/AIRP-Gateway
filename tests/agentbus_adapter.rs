@@ -132,7 +132,7 @@ fn adapter_state() -> Arc<airp_gateway::agentbus::AdapterState> {
 fn subscribe(
     state: &airp_gateway::agentbus::AdapterState,
 ) -> (
-    u64,
+    String,
     tokio::sync::broadcast::Receiver<airp_gateway::agentbus::Envelope>,
 ) {
     state.bus.subscribe()
