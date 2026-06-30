@@ -31,11 +31,17 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy (all features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Test
+      - name: Build pure bridge (default features, no agentbus)
+        run: cargo build
+
+      - name: Test (default features — pure bridge)
         run: cargo test --all-targets
+
+      - name: Test (agentbus feature)
+        run: cargo test --all-targets --features agentbus
 
   e2e-stdio:
     name: cross-process stdio e2e (self-contained)

@@ -228,11 +228,12 @@ impl GatewayConfig {
             }
         }
 
-        // SSRF defense: reject HTTP upstreams targeting private/loopback/link-local.
+        // SSRF defense: reject HTTP upstreams targeting private/link-local/
+        // reserved ranges. Loopback is allowed (the common local-MCP case).
         if self.block_private_upstream_urls {
             for up in &self.upstreams {
                 if let TransportConfig::Http { url, .. } = &up.transport {
-                    if let Some(reason) = url_is_private_or_loopback(url) {
+                    if let Some(reason) = url_blocked_target_reason(url) {
                         return Err(GatewayError::Config(format!(
                             "upstream `{}` URL `{url}` rejected (SSRF defense: {reason}). \
                              Set block_private_upstream_urls=false to allow.",
@@ -291,48 +292,48 @@ impl GatewayConfig {
 }
 
 /// Inspect an upstream URL for SSRF risk. Returns `Some(reason)` if the URL's
-/// host is (or resolves to) a private / loopback / link-local / unspecified
-/// address. Returns `None` if the URL is unparseable or appears safe.
-/// Unparseable URLs are not rejected here; they will fail later at request
-/// time inside `reqwest`.
+/// host is a private / link-local / unspecified / reserved address. Returns
+/// `None` if the URL is unparseable or appears safe.
 ///
-/// NOTE: This checks the host literally; it does **not** perform DNS resolution
-/// (which would be racy and ToCTOU-prone). Operators pointing at a hostname
-/// that resolves internally must explicitly set `block_private_upstream_urls=false`.
-fn url_is_private_or_loopback(url: &str) -> Option<&'static str> {
+/// **Loopback (`127.0.0.0/8`, `::1`, `localhost`) is intentionally allowed.**
+/// A local-first gateway's most common HTTP upstream is an MCP server on
+/// localhost; blocking it by default is pure friction. The high-value SSRF
+/// targets — internal LAN, cloud metadata at `169.254.169.254`, etc. — are
+/// still blocked by default. Restrict loopback yourself via the OS/firewall if
+/// your threat model requires it.
+///
+/// NOTE: checks the host literally; no DNS resolution (racy/ToCTOU). A hostname
+/// that resolves to an internal address is not caught — set
+/// `block_private_upstream_urls=false` only if you intend internal targets, and
+/// rely on network policy for the rest.
+fn url_blocked_target_reason(url: &str) -> Option<&'static str> {
     let parsed = url::Url::parse(url).ok()?;
     let host = parsed.host_str()?;
-    // Literal IP check (covers `http://127.0.0.1`, `http://[::1]`, etc.).
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        if ip.is_loopback() {
-            return Some("loopback address");
+    // Loopback hostnames are allowed (see doc above).
+    if matches!(
+        host,
+        "localhost" | "localhost.localdomain" | "ip6-localhost"
+    ) {
+        return None;
+    }
+    // Only literal IPs are classified; loopback is allowed.
+    let ip = host.parse::<std::net::IpAddr>().ok()?;
+    if ip.is_loopback() {
+        return None;
+    }
+    if ip.is_unspecified() {
+        return Some("unspecified address");
+    }
+    match ip {
+        std::net::IpAddr::V4(v4) if v4.is_link_local() => return Some("link-local address"),
+        std::net::IpAddr::V6(v6) if v6.is_unicast_link_local() => {
+            return Some("link-local address")
         }
-        if ip.is_unspecified() {
-            return Some("unspecified address");
-        }
-        match ip {
-            std::net::IpAddr::V4(v4) if v4.is_link_local() => {
-                return Some("link-local address");
-            }
-            std::net::IpAddr::V6(v6) if v6.is_unicast_link_local() => {
-                return Some("link-local address");
-            }
-            _ => {}
-        }
-        // Private / shared / benchmarking ranges per RFC 1918 + RFC 6890.
-        if is_private_or_reserved(ip) {
-            return Some("private/reserved address");
-        }
-    } else {
-        // Hostname present (no literal IP). We can't resolve here, so reject
-        // obvious local-looking names as a cheap defense; full DNS resolution
-        // would be racy (ToCTOU) and require a resolver dependency.
-        if matches!(
-            host,
-            "localhost" | "localhost.localdomain" | "ip6-localhost"
-        ) {
-            return Some("localhost hostname");
-        }
+        _ => {}
+    }
+    // Private / shared / benchmarking ranges per RFC 1918 + RFC 6890.
+    if is_private_or_reserved(ip) {
+        return Some("private/reserved address");
     }
     None
 }
@@ -439,15 +440,17 @@ mod tests {
     }
 
     #[test]
-    fn ssrf_rejects_loopback_ip() {
+    fn ssrf_allows_loopback_ip_by_default() {
+        // Loopback is the common local-MCP upstream; allowed even with the
+        // SSRF guard on.
         let cfg = cfg_with_http(vec![http_up("a", "http://127.0.0.1:3000/mcp/v1")], true);
-        assert!(cfg.validate().is_err());
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]
-    fn ssrf_rejects_localhost_hostname() {
+    fn ssrf_allows_localhost_hostname_by_default() {
         let cfg = cfg_with_http(vec![http_up("a", "http://localhost:3000/mcp/v1")], true);
-        assert!(cfg.validate().is_err());
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

@@ -30,8 +30,23 @@ futures-util = "0.3"
 bytes = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4"], optional = true }
 url = "2"
+
+# The State-Protocol AgentBus adapter is an OPTIONAL frontend, gated off by
+# default so consumers using airp-gateway purely as an MCP bridge do not compile
+# any project-specific (State-Protocol) code. Enable with `--features agentbus`.
+[features]
+default = []
+agentbus = ["dep:uuid"]
+
+[[example]]
+name = "agentbus_sse"
+required-features = ["agentbus"]
+
+[[test]]
+name = "agentbus_adapter"
+required-features = ["agentbus"]
 
 [dev-dependencies]
 tempfile = "3"
