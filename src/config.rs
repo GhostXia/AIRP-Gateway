@@ -249,8 +249,8 @@ impl GatewayConfig {
         for route in &self.routes {
             if !upstream_names.contains(route.upstream.as_str()) {
                 return Err(GatewayError::Config(format!(
-                    "route `{}` (path `{}`) references unknown upstream `{}`",
-                    route.path, route.method, route.upstream
+                    "route `{} {}` references unknown upstream `{}`",
+                    route.method, route.path, route.upstream
                 )));
             }
         }
@@ -347,10 +347,10 @@ fn is_private_or_reserved(ip: std::net::IpAddr) -> bool {
                 // 198.18.0.0/15, 240.0.0.0/4 — cover via std lib where available.
                 let o = v4.octets();
                 o[0] == 0
-                    || (o[0] == 100 && o[1] >= 64)
-                    || (o[0] == 192 && o[1] == 0)
-                    || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
-                    || o[0] >= 240
+                    || (o[0] == 100 && (64..=127).contains(&o[1])) // 100.64.0.0/10 CGNAT
+                    || (o[0] == 192 && o[1] == 0 && o[2] == 0) // 192.0.0.0/24
+                    || (o[0] == 198 && (o[1] == 18 || o[1] == 19)) // 198.18.0.0/15 benchmarking
+                    || o[0] >= 240 // 240.0.0.0/4 reserved
             }
         }
         std::net::IpAddr::V6(v6) => {
