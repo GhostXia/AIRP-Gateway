@@ -8,14 +8,24 @@
 //! - captures the *negotiated* `protocolVersion` and sends it as the
 //!   `MCP-Protocol-Version` header on subsequent requests;
 //! - accepts either `application/json` or `text/event-stream` (SSE) responses.
+//!
+//! ## Robustness
+//! - The `reqwest::Client` is built with configurable connect/read timeouts.
+//! - `shutdown` is a no-op (HTTP has no persistent resource to close).
 
 use std::sync::Mutex;
+use std::time::Duration;
 
 use async_trait::async_trait;
 
 use crate::error::{GatewayError, Result};
 use crate::mcp::transport::McpTransport;
 use crate::mcp::types::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+
+/// Default connect timeout for the HTTP client.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default request timeout (connect + read).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct HttpTransport {
     client: reqwest::Client,
@@ -25,11 +35,24 @@ pub struct HttpTransport {
     session_id: Mutex<Option<String>>,
     /// Negotiated protocol version (server's reply to `initialize`).
     protocol_version: Mutex<Option<String>>,
+    /// Maximum response body size in bytes. Bodies exceeding this are rejected.
+    max_response_bytes: usize,
 }
 
 impl HttpTransport {
     pub fn new(url: &str, auth_token: Option<String>) -> Result<Self> {
+        Self::with_max_response(url, auth_token, 10 * 1024 * 1024)
+    }
+
+    /// Create with a specific `max_response_bytes` limit.
+    pub fn with_max_response(
+        url: &str,
+        auth_token: Option<String>,
+        max_response_bytes: usize,
+    ) -> Result<Self> {
         let client = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|e| GatewayError::Transport(e.to_string()))?;
         Ok(Self {
@@ -38,6 +61,7 @@ impl HttpTransport {
             auth_token,
             session_id: Mutex::new(None),
             protocol_version: Mutex::new(None),
+            max_response_bytes,
         })
     }
 
@@ -67,7 +91,7 @@ impl McpTransport for HttpTransport {
         let resp = rb
             .send()
             .await
-            .map_err(|e| GatewayError::Transport(e.to_string()))?;
+            .map_err(|e| GatewayError::Transport(format!("upstream HTTP request: {e}")))?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -90,10 +114,37 @@ impl McpTransport for HttpTransport {
             .map(|c| c.contains("text/event-stream"))
             .unwrap_or(false);
 
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| GatewayError::Transport(e.to_string()))?;
+        // Pre-check Content-Length header to reject oversized responses before
+        // allocating memory. This is a fast path; the actual body size is
+        // verified after streaming read below.
+        if let Some(cl) = resp
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            if cl > self.max_response_bytes {
+                return Err(GatewayError::ResponseTooLarge(self.max_response_bytes));
+            }
+        }
+
+        // Stream the body chunk-by-chunk, accumulating with a size cap.
+        // This avoids loading an unbounded response into memory.
+        let mut body_bytes = Vec::new();
+        let mut total: usize = 0;
+        let mut stream = resp.bytes_stream();
+        use futures_util::StreamExt;
+        while let Some(chunk) = stream.next().await {
+            let chunk =
+                chunk.map_err(|e| GatewayError::Transport(format!("read upstream body: {e}")))?;
+            total += chunk.len();
+            if total > self.max_response_bytes {
+                return Err(GatewayError::ResponseTooLarge(self.max_response_bytes));
+            }
+            body_bytes.extend_from_slice(&chunk);
+        }
+        let text = String::from_utf8(body_bytes)
+            .map_err(|e| GatewayError::Transport(format!("non-utf8 upstream body: {e}")))?;
 
         let parsed = if is_sse {
             parse_sse(&text)?
@@ -119,9 +170,11 @@ impl McpTransport for HttpTransport {
         let rb = self.decorate(self.client.post(&self.url).json(&note));
         rb.send()
             .await
-            .map_err(|e| GatewayError::Transport(e.to_string()))?;
+            .map_err(|e| GatewayError::Transport(format!("upstream HTTP notify: {e}")))?;
         Ok(())
     }
+
+    // HTTP transport has no persistent resource to close; shutdown is a no-op.
 }
 
 /// Extract the first JSON-RPC response from an SSE body. Concatenates the

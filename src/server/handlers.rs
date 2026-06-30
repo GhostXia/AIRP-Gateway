@@ -36,6 +36,13 @@ pub async fn dispatch(
 ) -> Response {
     let path = uri.path();
 
+    // Defense-in-depth: cap inbound body size. tower-http's RequestBodyLimitLayer
+    // is the primary gate (see server::mod), but we re-check here so callers
+    // using the bridge directly (custom frontends) also get the bound.
+    if body.len() > state.config.max_request_bytes {
+        return GatewayError::PayloadTooLarge(state.config.max_request_bytes).into_response();
+    }
+
     let rule = match state.bridge.match_route(method.as_str(), path) {
         Some(r) => r.clone(),
         None => return GatewayError::NoRoute(method.to_string(), path.to_string()).into_response(),

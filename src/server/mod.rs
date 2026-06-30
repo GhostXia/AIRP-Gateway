@@ -31,7 +31,14 @@ impl GatewayState {
     pub async fn build(config: GatewayConfig) -> Result<Arc<Self>> {
         // Security gate: reject disallowed stdio commands before spawning anything.
         config.validate()?;
-        let pool = Arc::new(UpstreamPool::from_config(&config.upstreams).await?);
+        let pool = Arc::new(
+            UpstreamPool::from_config(
+                &config.upstreams,
+                config.upstream_timeout_secs,
+                config.max_response_bytes,
+            )
+            .await?,
+        );
         let bridge = Bridge::new(pool.clone(), config.routes.clone());
         Ok(Arc::new(GatewayState {
             config,
@@ -94,6 +101,9 @@ impl Gateway {
 
         let mut app = public
             .merge(api)
+            .layer(tower_http::limit::RequestBodyLimitLayer::new(
+                self.state.config.max_request_bytes,
+            ))
             .layer(middleware::cors_layer(&self.state.config.cors));
 
         if self.state.config.rate_limit.enabled {
@@ -111,7 +121,9 @@ impl Gateway {
         app.with_state(state)
     }
 
-    /// Bind and serve until the process is terminated.
+    /// Bind and serve until the process is terminated or a shutdown signal
+    /// (SIGTERM / SIGINT / Ctrl-C) is received. On shutdown, gracefully drain
+    /// in-flight requests and shut down all upstream transports.
     pub async fn run(self) -> Result<()> {
         let addr: SocketAddr = self
             .state
@@ -137,11 +149,46 @@ impl Gateway {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         tracing::info!("airp-gateway listening on http://{addr}");
 
+        let pool = self.state.pool.clone();
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            tracing::info!("airp-gateway shutting down upstream transports");
+            if let Err(e) = pool.shutdown_all().await {
+                tracing::warn!(error = %e, "error during upstream shutdown");
+            }
+        })
         .await?;
         Ok(())
     }
+}
+
+/// Wait for a termination signal (SIGTERM / SIGINT on Unix, Ctrl-C on Windows).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("install Ctrl-C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("shutdown signal received");
 }

@@ -30,6 +30,25 @@ pub struct GatewayConfig {
     /// entry by full string *or* file name, else [`GatewayConfig::validate`]
     /// fails. Has no effect on HTTP upstreams.
     pub allowed_commands: Vec<String>,
+    /// Maximum size of an inbound frontend request body, in bytes. Default 1 MiB.
+    /// Protects against unbounded memory use from large requests.
+    pub max_request_bytes: usize,
+    /// Maximum size of an upstream MCP response body, in bytes. Default 10 MiB.
+    /// Protects against a malicious or buggy upstream sending an unbounded response.
+    pub max_response_bytes: usize,
+    /// Timeout in seconds for upstream MCP requests (connect + read). Default 30s.
+    /// `McpClient::invoke` wraps the transport call in `tokio::time::timeout`.
+    /// Set to 0 to disable (not recommended in production).
+    pub upstream_timeout_secs: u64,
+    /// When true, HTTP upstream URLs are checked against private/loopback/link-local
+    /// address ranges at `validate()` time (SSRF defense). Default true (defense on).
+    /// Set false only if you intentionally target an internal MCP server and
+    /// understand the risk.
+    pub block_private_upstream_urls: bool,
+    /// When `allowed_commands` is non-empty, stdio upstreams with non-empty `args`
+    /// are rejected unless this is set to true. Default false (defense on).
+    /// Prevents `command = "sh", args = ["-c", "rm -rf /"]` style attacks.
+    pub allow_arbitrary_args: bool,
 }
 
 impl Default for GatewayConfig {
@@ -42,6 +61,11 @@ impl Default for GatewayConfig {
             upstreams: Vec::new(),
             routes: Vec::new(),
             allowed_commands: Vec::new(),
+            max_request_bytes: 1024 * 1024,
+            max_response_bytes: 10 * 1024 * 1024,
+            upstream_timeout_secs: 30,
+            block_private_upstream_urls: true,
+            allow_arbitrary_args: false,
         }
     }
 }
@@ -171,22 +195,66 @@ impl GatewayConfig {
 
     /// Validate security-relevant invariants. Call before building transports.
     ///
-    /// Currently: if [`allowed_commands`](Self::allowed_commands) is non-empty,
-    /// every stdio upstream's `command` must be allowed.
+    /// Currently:
+    /// - if [`allowed_commands`](Self::allowed_commands) is non-empty, every
+    ///   stdio upstream's `command` must be allowed;
+    /// - if `allow_arbitrary_args` is false and `allowed_commands` is non-empty,
+    ///   stdio upstreams with non-empty `args` are rejected (defense against
+    ///   `command = "sh", args = ["-c", "..."]` style attacks);
+    /// - if [`block_private_upstream_urls`](Self::block_private_upstream_urls)
+    ///   is true, every HTTP upstream URL must not resolve to a private /
+    ///   loopback / link-local address (SSRF defense).
     pub fn validate(&self) -> Result<()> {
-        if self.allowed_commands.is_empty() {
-            return Ok(());
-        }
-        for up in &self.upstreams {
-            if let TransportConfig::Stdio { command, .. } = &up.transport {
-                if !command_allowed(command, &self.allowed_commands) {
-                    return Err(GatewayError::Config(format!(
-                        "stdio command `{command}` (upstream `{}`) is not in allowed_commands",
-                        up.name
-                    )));
+        // stdio command allowlist.
+        if !self.allowed_commands.is_empty() {
+            for up in &self.upstreams {
+                if let TransportConfig::Stdio { command, args, .. } = &up.transport {
+                    if !command_allowed(command, &self.allowed_commands) {
+                        return Err(GatewayError::Config(format!(
+                            "stdio command `{command}` (upstream `{}`) is not in allowed_commands",
+                            up.name
+                        )));
+                    }
+                    // Reject arbitrary args unless the operator explicitly opted in.
+                    // Defense against `command = "sh", args = ["-c", "rm -rf /"]`.
+                    if !args.is_empty() && !self.allow_arbitrary_args {
+                        return Err(GatewayError::Config(format!(
+                            "stdio upstream `{}` uses args but allow_arbitrary_args=false \
+                             (allowed_commands is active). Set allow_arbitrary_args=true to permit.",
+                            up.name
+                        )));
+                    }
                 }
             }
         }
+
+        // SSRF defense: reject HTTP upstreams targeting private/loopback/link-local.
+        if self.block_private_upstream_urls {
+            for up in &self.upstreams {
+                if let TransportConfig::Http { url, .. } = &up.transport {
+                    if let Some(reason) = url_is_private_or_loopback(url) {
+                        return Err(GatewayError::Config(format!(
+                            "upstream `{}` URL `{url}` rejected (SSRF defense: {reason}). \
+                             Set block_private_upstream_urls=false to allow.",
+                            up.name
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Route integrity: every route's upstream must exist in the upstreams list.
+        let upstream_names: std::collections::HashSet<&str> =
+            self.upstreams.iter().map(|u| u.name.as_str()).collect();
+        for route in &self.routes {
+            if !upstream_names.contains(route.upstream.as_str()) {
+                return Err(GatewayError::Config(format!(
+                    "route `{} {}` references unknown upstream `{}`",
+                    route.method, route.path, route.upstream
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -199,6 +267,96 @@ impl GatewayConfig {
         }
         if let Ok(v) = std::env::var("AIRP_GW_ACCESS_KEY") {
             self.access_key = if v.is_empty() { None } else { Some(v) };
+        }
+        if let Ok(v) = std::env::var("AIRP_GW_MAX_REQUEST_BYTES") {
+            if let Ok(n) = v.parse::<usize>() {
+                if n > 0 {
+                    self.max_request_bytes = n;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("AIRP_GW_MAX_RESPONSE_BYTES") {
+            if let Ok(n) = v.parse::<usize>() {
+                if n > 0 {
+                    self.max_response_bytes = n;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("AIRP_GW_UPSTREAM_TIMEOUT_SECS") {
+            if let Ok(n) = v.parse::<u64>() {
+                self.upstream_timeout_secs = n;
+            }
+        }
+    }
+}
+
+/// Inspect an upstream URL for SSRF risk. Returns `Some(reason)` if the URL's
+/// host is (or resolves to) a private / loopback / link-local / unspecified
+/// address. Returns `None` if the URL is unparseable or appears safe.
+/// Unparseable URLs are not rejected here; they will fail later at request
+/// time inside `reqwest`.
+///
+/// NOTE: This checks the host literally; it does **not** perform DNS resolution
+/// (which would be racy and ToCTOU-prone). Operators pointing at a hostname
+/// that resolves internally must explicitly set `block_private_upstream_urls=false`.
+fn url_is_private_or_loopback(url: &str) -> Option<&'static str> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    // Literal IP check (covers `http://127.0.0.1`, `http://[::1]`, etc.).
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if ip.is_loopback() {
+            return Some("loopback address");
+        }
+        if ip.is_unspecified() {
+            return Some("unspecified address");
+        }
+        match ip {
+            std::net::IpAddr::V4(v4) if v4.is_link_local() => {
+                return Some("link-local address");
+            }
+            std::net::IpAddr::V6(v6) if v6.is_unicast_link_local() => {
+                return Some("link-local address");
+            }
+            _ => {}
+        }
+        // Private / shared / benchmarking ranges per RFC 1918 + RFC 6890.
+        if is_private_or_reserved(ip) {
+            return Some("private/reserved address");
+        }
+    } else {
+        // Hostname present (no literal IP). We can't resolve here, so reject
+        // obvious local-looking names as a cheap defense; full DNS resolution
+        // would be racy (ToCTOU) and require a resolver dependency.
+        if matches!(
+            host,
+            "localhost" | "localhost.localdomain" | "ip6-localhost"
+        ) {
+            return Some("localhost hostname");
+        }
+    }
+    None
+}
+
+/// True for RFC 1918 private ranges + RFC 6890 reserved/shared/benchmarking,
+/// which have no business being an upstream for a local gateway.
+fn is_private_or_reserved(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_private() || v4.is_broadcast() || v4.is_documentation() || {
+                // 0.0.0.0/8, 100.64.0.0/10 (CGNAT), 192.0.0.0/24, 192.0.2.0/24,
+                // 198.18.0.0/15, 240.0.0.0/4 — cover via std lib where available.
+                let o = v4.octets();
+                o[0] == 0
+                    || (o[0] == 100 && (64..=127).contains(&o[1])) // 100.64.0.0/10 CGNAT
+                    || (o[0] == 192 && o[1] == 0 && o[2] == 0) // 192.0.0.0/24
+                    || (o[0] == 198 && (o[1] == 18 || o[1] == 19)) // 198.18.0.0/15 benchmarking
+                    || o[0] >= 240 // 240.0.0.0/4 reserved
+            }
+        }
+        std::net::IpAddr::V6(v6) => {
+            // Unique local fc00::/7, site-local fec0::/10 (deprecated but reserved).
+            let seg0 = v6.segments()[0];
+            (seg0 & 0xfe00) == 0xfc00 || (seg0 & 0xffc0) == 0xfec0
         }
     }
 }
@@ -249,14 +407,175 @@ mod tests {
 
     #[test]
     fn allowlist_ignores_http_upstreams() {
+        // SSRF defense is on by default; this URL points at a public host so
+        // it stays compatible with the allowlist-only intent of the test.
         let http = UpstreamConfig {
             name: "h".into(),
             transport: TransportConfig::Http {
-                url: "http://127.0.0.1:3000/mcp/v1".into(),
+                url: "https://example.com/mcp/v1".into(),
                 auth_token: None,
             },
         };
         let cfg = cfg_with(vec![http], vec!["airp-mcp"]);
         assert!(cfg.validate().is_ok());
+    }
+
+    fn http_up(name: &str, url: &str) -> UpstreamConfig {
+        UpstreamConfig {
+            name: name.into(),
+            transport: TransportConfig::Http {
+                url: url.into(),
+                auth_token: None,
+            },
+        }
+    }
+
+    fn cfg_with_http(upstreams: Vec<UpstreamConfig>, block_private: bool) -> GatewayConfig {
+        GatewayConfig {
+            upstreams,
+            block_private_upstream_urls: block_private,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ssrf_rejects_loopback_ip() {
+        let cfg = cfg_with_http(vec![http_up("a", "http://127.0.0.1:3000/mcp/v1")], true);
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn ssrf_rejects_localhost_hostname() {
+        let cfg = cfg_with_http(vec![http_up("a", "http://localhost:3000/mcp/v1")], true);
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn ssrf_rejects_private_v4() {
+        let cfg = cfg_with_http(vec![http_up("a", "http://10.0.0.5/mcp/v1")], true);
+        assert!(cfg.validate().is_err());
+        let cfg = cfg_with_http(vec![http_up("a", "http://192.168.1.1/mcp/v1")], true);
+        assert!(cfg.validate().is_err());
+        let cfg = cfg_with_http(vec![http_up("a", "http://172.16.0.1/mcp/v1")], true);
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn ssrf_rejects_link_local() {
+        let cfg = cfg_with_http(vec![http_up("a", "http://169.254.169.254/mcp/v1")], true);
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn ssrf_rejects_unspecified() {
+        let cfg = cfg_with_http(vec![http_up("a", "http://0.0.0.0:3000/mcp/v1")], true);
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn ssrf_allows_public_host() {
+        let cfg = cfg_with_http(vec![http_up("a", "https://example.com/mcp/v1")], true);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn ssrf_can_be_disabled_for_local_upstream() {
+        let cfg = cfg_with_http(vec![http_up("a", "http://127.0.0.1:3000/mcp/v1")], false);
+        assert!(cfg.validate().is_ok());
+    }
+
+    // --- args validation tests ---
+
+    fn stdio_up_with_args(name: &str, command: &str, args: Vec<&str>) -> UpstreamConfig {
+        UpstreamConfig {
+            name: name.into(),
+            transport: TransportConfig::Stdio {
+                command: command.into(),
+                args: args.into_iter().map(String::from).collect(),
+                cwd: None,
+            },
+        }
+    }
+
+    #[test]
+    fn args_rejected_when_allowlist_active_and_arbitrary_args_false() {
+        let cfg = GatewayConfig {
+            upstreams: vec![stdio_up_with_args(
+                "a",
+                "airp-mcp",
+                vec!["mcp", "--data-dir", "/tmp"],
+            )],
+            allowed_commands: vec!["airp-mcp".into()],
+            allow_arbitrary_args: false,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn args_allowed_when_arbitrary_args_opt_in() {
+        let cfg = GatewayConfig {
+            upstreams: vec![stdio_up_with_args(
+                "a",
+                "airp-mcp",
+                vec!["mcp", "--data-dir", "/tmp"],
+            )],
+            allowed_commands: vec!["airp-mcp".into()],
+            allow_arbitrary_args: true,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn args_not_checked_when_allowlist_empty() {
+        // Empty allowed_commands means no command/args validation at all.
+        let cfg = GatewayConfig {
+            upstreams: vec![stdio_up_with_args("a", "/bin/bash", vec!["-c", "echo hi"])],
+            allowed_commands: vec![],
+            allow_arbitrary_args: false,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    // --- defaults tests ---
+
+    #[test]
+    fn default_timeout_and_limits() {
+        let cfg = GatewayConfig::default();
+        assert_eq!(cfg.upstream_timeout_secs, 30);
+        assert_eq!(cfg.max_request_bytes, 1024 * 1024);
+        assert_eq!(cfg.max_response_bytes, 10 * 1024 * 1024);
+        assert!(cfg.block_private_upstream_urls);
+        assert!(!cfg.allow_arbitrary_args);
+    }
+
+    #[test]
+    fn route_referencing_unknown_upstream_is_rejected() {
+        let cfg = GatewayConfig {
+            upstreams: vec![UpstreamConfig {
+                name: "real".to_string(),
+                transport: TransportConfig::Http {
+                    url: "https://example.com/mcp".to_string(),
+                    auth_token: None,
+                },
+            }],
+            routes: vec![RouteRule {
+                path: "/v1/test".to_string(),
+                method: "POST".to_string(),
+                upstream: "phantom".to_string(),
+                target: RouteTarget::Tool {
+                    name: "echo".to_string(),
+                    stream: false,
+                },
+            }],
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("phantom"),
+            "error should mention the unknown upstream name: {err}"
+        );
     }
 }

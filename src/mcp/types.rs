@@ -11,6 +11,11 @@ pub const JSONRPC_VERSION: &str = "2.0";
 /// MCP protocol revision advertised during `initialize`.
 pub const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 
+/// Protocol versions this client can speak. The server's negotiated version
+/// (returned in its `initialize` response) must be one of these, else the
+/// client disconnects per spec.
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26"];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,

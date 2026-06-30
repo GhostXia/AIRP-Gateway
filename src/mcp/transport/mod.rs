@@ -22,19 +22,34 @@ pub trait McpTransport: Send + Sync {
     /// Fire a notification (no response expected).
     async fn notify(&self, note: JsonRpcNotification) -> Result<()>;
 
+    /// Gracefully shut down the transport (e.g. close stdin, wait for child exit).
+    /// Default is a no-op; transports that own resources should override.
+    async fn shutdown(&self) {}
+
     // TODO(streaming): a `request_stream` returning a `Stream<Item = ServerEvent>`
     // for tools whose results arrive incrementally (mapped to frontend SSE).
 }
 
 /// Construct a transport from its declarative config.
-pub async fn connect(cfg: &TransportConfig) -> Result<Box<dyn McpTransport>> {
+///
+/// `max_response_bytes` is applied to HTTP transports to cap the upstream
+/// response body size. stdio transports do their own line-by-line framing
+/// and are not subject to this limit (the reader task drains on EOF).
+pub async fn connect(
+    cfg: &TransportConfig,
+    max_response_bytes: usize,
+) -> Result<Box<dyn McpTransport>> {
     match cfg {
         TransportConfig::Stdio { command, args, cwd } => {
             let t = stdio::StdioTransport::connect(command, args, cwd.as_deref()).await?;
             Ok(Box::new(t))
         }
         TransportConfig::Http { url, auth_token } => {
-            let t = http::HttpTransport::new(url, auth_token.clone())?;
+            let t = http::HttpTransport::with_max_response(
+                url,
+                auth_token.clone(),
+                max_response_bytes,
+            )?;
             Ok(Box::new(t))
         }
     }
