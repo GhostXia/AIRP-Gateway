@@ -1,7 +1,7 @@
 # AIRP-Gateway · 计划书（Roadmap）
 
 > 本文件是**前瞻性计划书**：当前能力快照 + 未来展望 + 版本规划。
-> 偏「做什么、往哪走、为什么」。开发过程的详细追踪/决策/研究见 [`DESIGN.md`](DESIGN.md)。
+> 偏「做什么、往哪走、为什么」。开发过程的详细追踪/决策/研究见 [`DESIGN.md`](DESIGN.md)；可定制点(配置/feature/扩展点)见 [`CUSTOMIZATION.md`](CUSTOMIZATION.md)。
 > 最后更新：2026-06-29
 
 ---

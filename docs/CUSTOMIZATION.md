@@ -123,6 +123,13 @@ if let Some(rule) = state.bridge.match_route("POST", "/v1/your-path") {
 }
 ```
 
+**可运行示例**:[`examples/custom_frontend.rs`](../examples/custom_frontend.rs) —— 纯桥(无 agentbus)、不起内置 HTTP server,直接 `GatewayState::build` + `bridge.dispatch` 驱动自带 mock 上游:
+```text
+cargo build --example mock_mcp_stdio
+AIRP_MCP_BIN=<built mock path> cargo run --example custom_frontend
+# → MCP result: {"content":[{"text":"ok",...}],"isError":false,"structuredContent":{"hello":"world"}}
+```
+
 ### 公共构件(已 re-export,直接 `use airp_gateway::*`)
 
 `GatewayConfig` · `RouteRule` · `RouteTarget` · `TransportConfig` · `UpstreamConfig`

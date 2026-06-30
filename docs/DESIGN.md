@@ -3,6 +3,7 @@
 > **文档定位**：本文件是**引导性 + 追踪性**文档，不是介绍性 README。
 > 它的唯一职责是：在任意开发阶段，为「下一步做什么、为什么这样做、还差什么」提供方向。
 > 任何人第一次接触本项目，读 §1 → §4 → §5 即可上手并知道该往哪走。
+> 相关文档：[`ROADMAP.md`](ROADMAP.md)(计划书)· [`CUSTOMIZATION.md`](CUSTOMIZATION.md)(可定制点)· [`AGENTBUS-ADAPTER.md`](AGENTBUS-ADAPTER.md) · [`MCP-SERVER-REQUIREMENTS.md`](MCP-SERVER-REQUIREMENTS.md)。
 >
 > **真理顺序**：源码 > 本文档 > 口头约定。若文档与源码冲突，先改文档再继续。
 > 最后更新：2026-06-12
